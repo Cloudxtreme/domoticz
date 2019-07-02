@@ -4,15 +4,14 @@
 #include "TCPClient.h"
 #include "../main/RFXNames.h"
 #include "../main/RFXtrx.h"
+#include "../main/Helper.h"
 #include "../main/Logger.h"
 #include "../hardware/DomoticzTCP.h"
 #include "../main/mainworker.h"
-
+#include "../main/localtime_r.h"
 #include <boost/asio.hpp>
 #include <algorithm>
 #include <boost/bind.hpp>
-
-extern MainWorker m_mainworker;
 
 namespace tcp {
 namespace server {
@@ -42,6 +41,7 @@ void CTCPServerInt::stop()
 	// Post a call to the stop function so that server::stop() is safe to call
 	// from any thread.
 	io_service_.post(boost::bind(&CTCPServerInt::handle_stop, this));
+	m_incoming_domoticz_history.clear();
 }
 
 void CTCPServerInt::handle_stop()
@@ -53,25 +53,71 @@ void CTCPServerInt::handle_stop()
 	stopAllClients();
 }
 
+bool CTCPServerInt::IsUserHereFirstTime(const std::string &ip_string)
+{
+	//
+	//	Log same IP-address first time and then once per day
+	//
+	time_t now = mytime(NULL);
+
+	std::vector<_tTCPLogInfo>::iterator itt = m_incoming_domoticz_history.begin();
+	while (itt!= m_incoming_domoticz_history.end())
+	{
+		if (difftime(now,itt->time) > SECONDS_PER_DAY)
+		{
+			itt = m_incoming_domoticz_history.erase(itt);
+		}
+		else
+		{
+			if (ip_string.compare(itt->string) == 0)
+			{
+				//already logged this
+				return false;
+			}
+			++itt;
+		}
+	}
+	if (m_incoming_domoticz_history.size() > 100)
+		return false; //just to be safe
+
+	_tTCPLogInfo li;
+	li.time = now;
+	li.string = ip_string;
+	m_incoming_domoticz_history.push_back(li);
+	return true;
+}
+
 void CTCPServerInt::handleAccept(const boost::system::error_code& error)
 {
-	if(!error) // 1.
-	{
-		boost::lock_guard<boost::mutex> l(connectionMutex);
-		std::string s = new_connection_->socket()->remote_endpoint().address().to_string();
-		new_connection_->m_endpoint=s;
-		_log.Log(LOG_STATUS,"Incoming Domoticz connection from: %s", s.c_str());
+	if (error)
+		return;
+	std::lock_guard<std::mutex> l(connectionMutex);
+	std::string s = new_connection_->socket()->remote_endpoint().address().to_string();
 
-		connections_.insert(new_connection_);
-		new_connection_->start();
-
-		new_connection_.reset(new CTCPClient(io_service_, this));
-
-		acceptor_.async_accept(
-			*(new_connection_->socket()),
-			boost::bind(&CTCPServerInt::handleAccept, this,
-			boost::asio::placeholders::error));
+	if (s.substr(0, 7) == "::ffff:") {
+		s = s.substr(7);
 	}
+
+	new_connection_->m_endpoint=s;
+
+	if (IsUserHereFirstTime(s))
+	{
+		_log.Log(LOG_STATUS, "Incoming Domoticz connection from: %s", s.c_str());
+	}
+	else
+	{
+		_log.Debug(DEBUG_NORM, "Incoming Domoticz connection from: %s", s.c_str());
+	}
+
+	connections_.insert(new_connection_);
+	new_connection_->start();
+
+	new_connection_.reset(new CTCPClient(io_service_, this));
+
+	acceptor_.async_accept(
+		*(new_connection_->socket()),
+		boost::bind(&CTCPServerInt::handleAccept, this,
+		boost::asio::placeholders::error));
 }
 
 _tRemoteShareUser* CTCPServerIntBase::FindUser(const std::string &username)
@@ -103,14 +149,14 @@ void CTCPServerIntBase::DoDecodeMessage(const CTCPClientBase *pClient, const uns
 
 void CTCPServerInt::stopClient(CTCPClient_ptr c)
 {
-	boost::lock_guard<boost::mutex> l(connectionMutex);
+	std::lock_guard<std::mutex> l(connectionMutex);
 	connections_.erase(c);
 	c->stop();
 }
 
 void CTCPServerIntBase::stopAllClients()
 {
-	boost::lock_guard<boost::mutex> l(connectionMutex);
+	std::lock_guard<std::mutex> l(connectionMutex);
 	if (connections_.empty())
 		return;
 	std::set<CTCPClient_ptr>::const_iterator itt;
@@ -130,7 +176,7 @@ std::vector<_tRemoteShareUser> CTCPServerIntBase::GetRemoteUsers()
 
 void CTCPServerIntBase::SetRemoteUsers(const std::vector<_tRemoteShareUser> &users)
 {
-	boost::lock_guard<boost::mutex> l(connectionMutex);
+	std::lock_guard<std::mutex> l(connectionMutex);
 	m_users=users;
 }
 
@@ -142,9 +188,9 @@ unsigned int CTCPServerIntBase::GetUserDevicesCount(const std::string &username)
 	return (unsigned int) pUser->Devices.size();
 }
 
-void CTCPServerIntBase::SendToAll(const unsigned long long DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore)
+void CTCPServerIntBase::SendToAll(const int /*HardwareID*/, const uint64_t DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore)
 {
-	boost::lock_guard<boost::mutex> l(connectionMutex);
+	std::lock_guard<std::mutex> l(connectionMutex);
 
 	//do not share Interface Messages
 	if (
@@ -202,7 +248,7 @@ CTCPServerInt::CTCPServerInt(const std::string& address, const std::string& port
 	acceptor_.bind(endpoint);
 	acceptor_.listen();
 
-	new_connection_ = boost::shared_ptr<CTCPClient>(new CTCPClient(io_service_, this));
+	new_connection_ = std::shared_ptr<CTCPClient>(new CTCPClient(io_service_, this));
 
 	acceptor_.async_accept(
 		*(new_connection_->socket()),
@@ -238,7 +284,7 @@ void CTCPServerProxied::stop()
 /// Stop the specified connection.
 void CTCPServerProxied::stopClient(CTCPClient_ptr c)
 {
-	boost::lock_guard<boost::mutex> l(connectionMutex);
+	std::lock_guard<std::mutex> l(connectionMutex);
 	c->stop();
 	connections_.erase(c);
 }
@@ -260,7 +306,7 @@ bool CTCPServerProxied::OnDisconnect(const std::string &token)
 bool CTCPServerProxied::OnNewConnection(const std::string &token, const std::string &username, const std::string &password)
 {
 	CSharedClient *new_client = new CSharedClient(this, m_pProxyClient, token, username);
-	CTCPClient_ptr new_connection_ = boost::shared_ptr<CSharedClient>(new_client);
+	CTCPClient_ptr new_connection_ = std::shared_ptr<CSharedClient>(new_client);
 	if (!HandleAuthentication(new_connection_, username, password)) {
 		new_connection_.reset(); // deletes new_client
 		return false;
@@ -304,7 +350,7 @@ CTCPServer::CTCPServer()
 #endif
 }
 
-CTCPServer::CTCPServer(const int ID)
+CTCPServer::CTCPServer(const int /*ID*/)
 {
 	m_pTCPServer = NULL;
 #ifndef NOCLOUD
@@ -359,9 +405,9 @@ bool CTCPServer::StartServer(const std::string &address, const std::string &port
 	} while (exception);
 	_log.Log(LOG_NORM, "Starting shared server on: %s:%s", listen_address.c_str(), port.c_str());
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CTCPServer::Do_Work, this)));
-
-	return (m_thread!=NULL);
+	m_thread = std::make_shared<std::thread>(&CTCPServer::Do_Work, this);
+	SetThreadName(m_thread->native_handle(), "TCPServer");
+	return (m_thread != nullptr);
 }
 
 #ifndef NOCLOUD
@@ -383,12 +429,14 @@ bool CTCPServer::StartServer(http::server::CProxyClient *proxy)
 
 void CTCPServer::StopServer()
 {
-	boost::lock_guard<boost::mutex> l(m_server_mutex);
+	std::lock_guard<std::mutex> l(m_server_mutex);
 	if (m_pTCPServer) {
 		m_pTCPServer->stop();
 	}
-	if (m_thread) {
+	if (m_thread)
+	{
 		m_thread->join();
+		m_thread.reset();
 	}
 	// This is the only time to delete it
 	if (m_pTCPServer) {
@@ -411,20 +459,20 @@ void CTCPServer::Do_Work()
 	}
 }
 
-void CTCPServer::SendToAll(const unsigned long long DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore)
+void CTCPServer::SendToAll(const int HardwareID, const uint64_t DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore)
 {
-	boost::lock_guard<boost::mutex> l(m_server_mutex);
+	std::lock_guard<std::mutex> l(m_server_mutex);
 	if (m_pTCPServer)
-		m_pTCPServer->SendToAll(DeviceRowID, pData, Length, pClient2Ignore);
+		m_pTCPServer->SendToAll(HardwareID, DeviceRowID, pData, Length, pClient2Ignore);
 #ifndef NOCLOUD
 	if (m_pProxyServer)
-		m_pProxyServer->SendToAll(DeviceRowID, pData, Length, pClient2Ignore);
+		m_pProxyServer->SendToAll(HardwareID, DeviceRowID, pData, Length, pClient2Ignore);
 #endif
 }
 
 void CTCPServer::SetRemoteUsers(const std::vector<_tRemoteShareUser> &users)
 {
-	boost::lock_guard<boost::mutex> l(m_server_mutex);
+	std::lock_guard<std::mutex> l(m_server_mutex);
 	if (m_pTCPServer)
 		m_pTCPServer->SetRemoteUsers(users);
 #ifndef NOCLOUD
@@ -435,7 +483,7 @@ void CTCPServer::SetRemoteUsers(const std::vector<_tRemoteShareUser> &users)
 
 unsigned int CTCPServer::GetUserDevicesCount(const std::string &username)
 {
-	boost::lock_guard<boost::mutex> l(m_server_mutex);
+	std::lock_guard<std::mutex> l(m_server_mutex);
 	if (m_pTCPServer) {
 		return m_pTCPServer->GetUserDevicesCount(username);
 	}
@@ -461,7 +509,7 @@ void CTCPServer::DoDecodeMessage(const CTCPClientBase *pClient, const unsigned c
 {
 	HwdType = HTYPE_Domoticz;
 	m_HwdID=8765;
-	Name="DomoticzFromMaster";
+	m_Name="DomoticzFromMaster";
 	m_SeqNr=1;
 	m_pUserData=(void*)pClient;
 	sDecodeRXMessage(this, pRXCommand, NULL, -1);

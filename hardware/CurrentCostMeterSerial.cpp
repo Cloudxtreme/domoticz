@@ -9,7 +9,6 @@
 #include "../webserver/cWebem.h"
 
 #include <string>
-#include <algorithm>
 #include <iostream>
 #include <boost/bind.hpp>
 
@@ -19,7 +18,6 @@
 //Class CurrentCostMeterSerial
 //
 CurrentCostMeterSerial::CurrentCostMeterSerial(const int ID, const std::string& devname, unsigned int baudRate):
-	m_stoprequested(false),
 	m_szSerialPort(devname),
 	m_baudRate(baudRate)
 {
@@ -28,18 +26,20 @@ CurrentCostMeterSerial::CurrentCostMeterSerial(const int ID, const std::string& 
 
 CurrentCostMeterSerial::~CurrentCostMeterSerial()
 {
-	clearReadCallback();
+
 }
 
 bool CurrentCostMeterSerial::StartHardware()
 {
-	m_stoprequested = false;
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CurrentCostMeterSerial::Do_Work, this)));
+	RequestStart();
+
+	m_thread = std::make_shared<std::thread>(&CurrentCostMeterSerial::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 
 	//Try to open the Serial Port
 	try
 	{
-		_log.Log(LOG_STATUS,"CurrentCost Smart Meter: Using serial port: %s", m_szSerialPort.c_str());
+		Log(LOG_STATUS,"Using serial port: %s", m_szSerialPort.c_str());
 		open(
 			m_szSerialPort,
 			m_baudRate,
@@ -50,9 +50,9 @@ bool CurrentCostMeterSerial::StartHardware()
 	}
 	catch (boost::exception & e)
 	{
-		_log.Log(LOG_ERROR,"CurrentCost Smart Meter: Error opening serial port!");
+		Log(LOG_ERROR,"Error opening serial port!");
 #ifdef _DEBUG
-		_log.Log(LOG_ERROR,"-----------------\n%s\n-----------------",boost::diagnostic_information(e).c_str());
+		Log(LOG_ERROR,"-----------------\n%s\n-----------------",boost::diagnostic_information(e).c_str());
 #else
 		(void)e;
 #endif
@@ -60,7 +60,7 @@ bool CurrentCostMeterSerial::StartHardware()
 	}
 	catch ( ... )
 	{
-		_log.Log(LOG_ERROR,"CurrentCost Smart Meter: Error opening serial port!!!");
+		Log(LOG_ERROR,"Error opening serial port!!!");
 		return false;
 	}
 	m_bIsStarted=true;
@@ -71,24 +71,11 @@ bool CurrentCostMeterSerial::StartHardware()
 
 bool CurrentCostMeterSerial::StopHardware()
 {
-	if (isOpen())
-	{
-		try {
-			clearReadCallback();
-			close();
-			doClose();
-			setErrorStatus(true);
-		} catch(...)
-		{
-			//Don't throw from a Stop command
-		}
-	}
-	m_stoprequested = true;
 	if (m_thread)
 	{
+		RequestStop();
 		m_thread->join();
-		// Wait a while. The read thread might be reading. Adding this prevents a pointer error in the async serial class.
-		sleep_milliseconds(10);
+		m_thread.reset();
 	}
 	m_bIsStarted = false;
 	return true;
@@ -97,15 +84,13 @@ bool CurrentCostMeterSerial::StopHardware()
 
 void CurrentCostMeterSerial::readCallback(const char *data, size_t len)
 {
-	boost::lock_guard<boost::mutex> l(readQueueMutex);
-
 	if (!m_bEnableReceive)
 		return; //receiving not enabled
 
 	ParseData(data, static_cast<int>(len));
 }
 
-bool CurrentCostMeterSerial::WriteToHardware(const char *pdata, const unsigned char length)
+bool CurrentCostMeterSerial::WriteToHardware(const char* /*pdata*/, const unsigned char /*length*/)
 {
 	return false;
 }
@@ -114,11 +99,11 @@ void CurrentCostMeterSerial::Do_Work()
 {
 	int sec_counter = 0;
 	int msec_counter = 0;
-	while (!m_stoprequested)
+
+	Log(LOG_STATUS, "Worker started...");
+
+	while (!IsStopRequested(200))
 	{
-		sleep_milliseconds(200);
-		if (m_stoprequested)
-			break;
 		msec_counter++;
 		if (msec_counter == 5)
 		{
@@ -130,30 +115,33 @@ void CurrentCostMeterSerial::Do_Work()
 			}
 		}
 	}
+	terminate();
+
+	Log(LOG_STATUS, "Worker stopped...");
 }
 
 //Webserver helpers
 namespace http {
 	namespace server {
-		char * CWebServer::SetCurrentCostUSBType(WebEmSession & session, const request& req)
+		void CWebServer::SetCurrentCostUSBType(WebEmSession & session, const request& req, std::string & redirect_uri)
 		{
-			m_retstr = "/index.html";
+			redirect_uri = "/index.html";
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return (char*)m_retstr.c_str();
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string idx = request::findValue(&req, "idx");
 			if (idx == "") {
-				return (char*)m_retstr.c_str();
+				return;
 			}
 
 			std::vector<std::vector<std::string> > result;
 
 			result = m_sql.safe_query("SELECT Mode1, Mode2, Mode3, Mode4, Mode5, Mode6 FROM Hardware WHERE (ID='%q')", idx.c_str());
-			if (result.size() < 1)
-				return (char*)m_retstr.c_str();
+			if (result.empty())
+				return;
 
 			int Mode1 = atoi(request::findValue(&req, "CCBaudrate").c_str());
 			int Mode2 = 0;
@@ -164,8 +152,6 @@ namespace http {
 			m_sql.UpdateRFXCOMHardwareDetails(atoi(idx.c_str()), Mode1, Mode2, Mode3, Mode4, Mode5, Mode6);
 
 			m_mainworker.RestartHardware(idx);
-
-			return (char*)m_retstr.c_str();
 		}
 	}
 }

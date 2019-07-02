@@ -1,7 +1,8 @@
 #pragma once
 
-#include <map>
+#include <boost/asio.hpp>
 #include <boost/function.hpp>
+#include <boost/thread.hpp>
 #include "server.hpp"
 #include "session_store.hpp"
 
@@ -18,13 +19,19 @@ namespace http {
 			AUTH_LOGIN=0,
 			AUTH_BASIC,
 		};
+		enum _eWebCompressionMode
+		{
+			WWW_USE_GZIP=0,
+			WWW_USE_STATIC_GZ_FILES,
+			WWW_FORCE_NO_GZIP_SUPPORT
+		};
 		typedef struct _tWebUserPassword
 		{
 			unsigned long ID;
 			std::string Username;
 			std::string Password;
-
 			_eUserRights userrights;
+			int TotSensors;
 			int ActiveTabs;
 		} WebUserPassword;
 
@@ -34,15 +41,13 @@ namespace http {
 			std::string remote_host;
 			std::string auth_token;
 			std::string username;
+			int reply_status;
 			time_t timeout;
 			time_t expires;
 			int rights;
 			bool rememberme;
 			bool isnew;
-			bool removecookie;
 			bool forcelogin;
-			std::string lastRequestPath;
-			std::string outputfilename;
 		} WebEmSession;
 
 		typedef struct _tIPNetwork
@@ -92,11 +97,10 @@ namespace http {
 
 		*/
 		class cWebem;
-		typedef boost::function< char*() > webem_include_function;
-		typedef boost::function< wchar_t*() > webem_include_function_w;
-		typedef boost::function< char*( WebEmSession & session, const request& ) > webem_action_function;
-		typedef boost::function< std::string( WebEmSession & session, const request& ) > webem_page_function;
-		typedef boost::function< wchar_t*( WebEmSession & session, const request& ) > webem_page_function_w;
+		typedef boost::function< void( std::string & content_part ) > webem_include_function;
+		typedef boost::function< void( std::wstring & content_part_w ) > webem_include_function_w;
+		typedef boost::function< void( WebEmSession & session, const request& req, std::string & redirecturi ) > webem_action_function;
+		typedef boost::function< void( WebEmSession & session, const request & req, reply & rep ) > webem_page_function;
 
 
 		/**
@@ -113,16 +117,17 @@ namespace http {
 		public:
 			/// Construct with a directory containing files to be served.
 			cWebemRequestHandler( const std::string& doc_root, cWebem* webem ) :
-				request_handler( doc_root, webem ),
-				m_doc_root ( doc_root ),
-				myWebem(webem)
+				request_handler( doc_root, webem )
 				{}
 
 			/// Handle a request and produce a reply.
-			virtual void handle_request(const request& req, reply& rep);
+			virtual void handle_request(const request& req, reply& rep) override;
 		private:
 			char *strftime_t(const char *format, const time_t rawtime);
 			bool CompressWebOutput(const request& req, reply& rep);
+			/// Websocket methods
+			bool is_upgrade_request(WebEmSession & session, const request& req, reply& rep);
+			std::string compute_accept_header(const std::string &websocket_key);
 			bool CheckAuthentication(WebEmSession & session, const request& req, reply& rep);
 			void send_authorization_request(reply& rep);
 			void send_remove_cookie(reply& rep);
@@ -135,10 +140,7 @@ namespace http {
 			std::string generateAuthToken(const WebEmSession & session, const request & req);
 			bool checkAuthToken(WebEmSession & session);
 			void removeAuthToken(const std::string & sessionId);
-			std::string m_doc_root;
-			// Webem link to application code
-			cWebem* myWebem;
-		};
+	};
 		// forward declaration for friend declaration
 		class CProxyClient;
 		/**
@@ -151,19 +153,16 @@ namespace http {
 		friend class CProxyClient;
 		public:
 			cWebem(
-				const std::string& address,
-				const std::string& port,
-				const std::string& doc_root,
-				const std::string& secure_cert_file,
-				const std::string& secure_cert_passphrase);
-
+				const server_settings & settings,
+				const std::string& doc_root);
+			~cWebem();
 			void Run();
 			void Stop();
 
 			void RegisterIncludeCode(
 				const char* idname,
 				webem_include_function fun );
-			
+
 			void RegisterIncludeCodeW(
 				const char* idname,
 				webem_include_function_w fun );
@@ -173,7 +172,7 @@ namespace http {
 				webem_page_function fun );
 			void RegisterPageCodeW(
 				const char* pageurl,
-				webem_page_function_w fun );
+				webem_page_function fun );
 
 			bool Include( std::string& reply );
 
@@ -195,27 +194,42 @@ namespace http {
 			void AddUserPassword(const unsigned long ID, const std::string &username, const std::string &password, const _eUserRights userrights, const int activetabs);
 			std::string ExtractRequestPath(const std::string& original_request_path);
 			bool IsBadRequestPath(const std::string& original_request_path);
-			
+
 			void ClearUserPasswords();
 			std::vector<_tWebUserPassword> m_userpasswords;
 			void AddLocalNetworks(std::string network);
 			void ClearLocalNetworks();
 			std::vector<_tIPNetwork> m_localnetworks;
-			void SetDigistRealm(std::string realm);
+			void SetDigistRealm(const std::string &realm);
 			std::string m_DigistRealm;
-			void SetZipPassword(std::string password);
+			void SetZipPassword(const std::string &password);
+
+			//IPs that are allowed to pass proxy headers
+			std::vector < std::string > myRemoteProxyIPs;
+			void AddRemoteProxyIPs(const std::string &ipaddr);
+			void ClearRemoteProxyIPs();
 
 			// Session store manager
-			void SetSessionStore(session_store* sessionStore);
-			session_store* GetSessionStore();
-
-			void CleanTimedOutSessions();
+			void SetSessionStore(session_store_impl_ptr sessionStore);
+			session_store_impl_ptr GetSessionStore();
 
 			std::string m_zippassword;
-			std::map<std::string,WebEmSession> m_sessions;
+			const std::string GetPort();
+			WebEmSession * GetSession(const std::string & ssid);
+			void AddSession(const WebEmSession & session);
+			void RemoveSession(const WebEmSession & session);
+			void RemoveSession(const std::string & ssid);
+			int CountSessions();
 			_eAuthenticationMethod m_authmethod;
 			//Whitelist url strings that bypass authentication checks (not used by basic-auth authentication)
 			std::vector < std::string > myWhitelistURLs;
+			std::map<std::string, WebEmSession> m_sessions;
+			server_settings m_settings;
+			// actual theme selected
+			std::string m_actTheme;
+
+			void SetWebCompressionMode(const _eWebCompressionMode gzmode);
+			_eWebCompressionMode m_gzipmode;
 		private:
 			/// store map between include codes and application functions
 			std::map < std::string, webem_include_function > myIncludes;
@@ -226,24 +240,22 @@ namespace http {
 			/// store name walue pairs for form submit action
 			std::map < std::string, webem_page_function > myPages;
 			/// store map between pages and application functions
-			std::map < std::string, webem_page_function_w > myPages_w;
+			std::map < std::string, webem_page_function > myPages_w;
+			void CleanSessions();
+			session_store_impl_ptr mySessionStore; /// session store
+			/// request handler specialized to handle webem requests
+			/// Rene: Beware: myRequestHandler should be declared BEFORE myServer
+			cWebemRequestHandler myRequestHandler;
 			/// boost::asio web server (RK: plain or secure)
-			server myServer;
-			/// port server is listening on
-			std::string myPort;
-			/// session store
-			session_store* mySessionStore;
-			/// next timed out session cleanup time
-			time_t myNextSessionCleanup;
-			// actual theme selected
-			std::string m_actTheme;
+			std::shared_ptr<server_base> myServer;
 			// root of url for reverse proxy servers
 			std::string m_webRoot;
-			/// request handler specialized to handle webem requests
-			cWebemRequestHandler myRequestHandler;
+			/// sessions management
+			std::mutex m_sessionsMutex;
+			boost::asio::io_service m_io_service;
+			boost::asio::deadline_timer m_session_clean_timer;
+			std::shared_ptr<std::thread> m_io_service_thread;
 		};
 
 	}
 }
-
-

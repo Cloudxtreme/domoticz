@@ -1,3 +1,5 @@
+@import url("../css/legacy.css"); /* Don't remove this line! */
+
 @font-face {
 	font-family: "OpenSans";
 	font-style: normal;
@@ -15,17 +17,12 @@ body {
 	background: #202020 url(images/imgbg.jpg) repeat !important;
 }
 #appversion:after {
-  content: " ElementMedia Light v0.1";
+  content: " ElementMedia Dark v0.3";
 }
 
 #status, #lastupdate, body table#itemtable tr td:first-child + td + td + td + td + td{color: #5e5d5d;}
 
-#status:before {
- content: "Status at this moment:  " !important;
- font-weight: normal;
-}
-
-body table#itemtablesmall tr td:first-child + td + td + td + td:before, 
+body table#itemtablesmall tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalldoubleicon tr td:first-child + td + td + td + td + td:before,
 body table#itemtable tr td:first-child + td + td + td + td:before ,
 body table#itemtablenotype tr td:first-child + td + td + td + td:before,
@@ -34,10 +31,10 @@ body table#itemtabletrippleicon tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalldoubleicon tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalltrippleicon tr td:first-child + td + td + td + td:before,
 body table#mobileitem tr td:first-child + td + td + td + td:before{
- content: "Laatst ingeschakeld: " !important;
+ content: "Last seen: " !important;
 }
 
-body table#itemtablesmall tr td:first-child + td + td + td + td:before, 
+body table#itemtablesmall tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalldoubleicon tr td:first-child + td + td + td + td + td:before,
 body table#itemtable tr td:first-child + td + td + td + td:before ,
 body table#itemtablenotype tr td:first-child + td + td + td + td:before,
@@ -46,13 +43,18 @@ body table#itemtabletrippleicon tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalldoubleicon tr td:first-child + td + td + td + td:before,
 body table#itemtablesmalltrippleicon tr td:first-child + td + td + td + td:before,
 body table#mobileitem tr td:first-child + td + td + td + td:before{
- content: "Type apparaat:"
+ content: "Type:"
+
 }
- 
+
 .navbar .nav {margin: 0 !important;}
 
 .ui-corner-all, .ui-corner-bottom, .ui-corner-right, .ui-corner-br {
 border-radius: 0px !important;
+}
+
+#holder > .container-fluid {
+    padding-top: 61px;
 }
 
 #comboroom, #combofloorplan {
@@ -78,10 +80,6 @@ copyright {
 	background-color: #1b1b1b;
 }
 
-.bannercontent {
-	padding-top: 80px !important;
-}
-
 .navbar .nav li a {
     text-decoration: none;
     text-transform: none;
@@ -95,8 +93,12 @@ copyright {
     background-image: none;
 }
 
-#timesun , 
-#room, 
+#timesun {
+  text-align: left;
+  color: #666;
+}
+
+#room,
 .room{
     background-color: #444343;
 	color: #666 !important;
@@ -137,19 +139,21 @@ h2{
 }
 
 body table#itemtablesmall tbody tr,
-body table#itemtablesmalldoubleicon tbody tr
+body table#itemtablesmalldoubleicon tbody tr,
 body table#itemtable tbody tr,
 body table#itemtablenotype tbody tr,
 body table#itemtablenostatus tbody tr,
+body table#itemtabledoubleicon tbody tr,
 body table#itemtabletrippleicon tbody tr,
 body table#itemtablesmalldoubleicon tbody tr,
 body table#itemtablesmalltrippleicon tbody tr,
-body table#mobileitem tbody tr
+body table#mobileitem tbody tr,
 body table#itemtablesmall tbody tr:hover,
 body table#itemtablesmalldoubleicon tbody tr:hover,
 body table#itemtable tbody tr:hover,
 body table#itemtablenotype tbody tr:hover,
 body table#itemtablenostatus tbody tr:hover,
+body table#itemtabledoubleicon tbody tr:hover,
 body table#itemtabletrippleicon tbody tr:hover,
 body table#itemtablesmalldoubleicon tbody tr:hover,
 body table#itemtablesmalltrippleicon tbody tr:hover,
@@ -198,6 +202,7 @@ body table#mobileitem tr td:first-child{
 }
 
 .btnsmall {
+  margin-top: 5px;
 	background: #444343 !important;
 	color: #eee;
 	font-family: Droid Sans,sans-serif !important;
@@ -213,4 +218,41 @@ box-shadow:         0px 5px 5px 0px rgba(50, 50, 50, 0.3);
 /* Row Fix */
 .bannav{
 width: 99.5% !important;
+}
+
+.dimslider {
+   width: calc(98% - 55px) !important;
+   height: 10px;
+   margin-top: 0px !important;
+   margin-left: 48px !important;
+   box-shadow: initial;
+   position: relative;
+}
+
+#dashcontent .dimslider {
+   width: calc(100% - 8px) !important;
+   margin-left: 4px !important;
+   margin-top: 10px !important;
+}
+
+#itemtablesmall .dimslider {
+   width: calc(98% - 52px) !important;
+   margin-top: 10px !important;
+   margin-left: 48px !important;
+}
+
+#itemtabledoubleicon .dimslider {
+   width: calc(98% - 114px) !important;
+   margin-top: 10px !important;
+   margin-left: 110px !important;
+}
+
+#itemtablesmalldoubleicon .dimslider {
+   width: calc(98% - 98px) !important;
+   margin-top: 10px !important;
+   margin-left: 95px !important;
+}
+
+.events-editor {
+    top: 80px;
 }

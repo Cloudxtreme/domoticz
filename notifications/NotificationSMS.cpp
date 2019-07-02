@@ -25,7 +25,15 @@ CNotificationSMS::~CNotificationSMS()
 {
 }
 
-bool CNotificationSMS::SendMessageImplementation(const std::string &Subject, const std::string &Text, const std::string &ExtraData, const int Priority, const std::string &Sound, const bool bFromNotification)
+bool CNotificationSMS::SendMessageImplementation(
+	const uint64_t Idx,
+	const std::string &Name,
+	const std::string &Subject,
+	const std::string &Text,
+	const std::string &ExtraData,
+	const int Priority,
+	const std::string &Sound,
+	const bool bFromNotification)
 {
 	//send message by Clickatell SMS
 	bool bRet = false;
@@ -66,7 +74,7 @@ bool CNotificationSMS::SendMessageImplementation(const std::string &Subject, con
 		<< "&text=" << Text;
 
 	std::vector<std::string> ExtraHeaders;
-	bRet |= HTTPClient::POST("https://api.clickatell.com/http/sendmsg", sPostData.str(), ExtraHeaders, sResult);
+	bRet |= HTTPClient::POST("https://platform.clickatell.com/messages/http/send", sPostData.str(), ExtraHeaders, sResult);
 	if (sResult.find("ERR:") != std::string::npos)
 	{
 		//We have an error

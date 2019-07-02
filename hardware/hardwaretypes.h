@@ -1,12 +1,26 @@
 #pragma once
 
+#include "../cereal/cereal.hpp"
+//#include "../cereal/types/string.hpp"
+//#include "../cereal/types/utility.hpp"
+//#include "../cereal/types/memory.hpp"
+//#include "../cereal/types/complex.hpp"
+//#include "../cereal/types/base_class.hpp"
+//#include "../cereal/types/array.hpp"
+//#include "../cereal/types/vector.hpp"
+//#include "../cereal/types/map.hpp"
+
+#include "ColorSwitch.h"
+
 #define sTypeDomoticzSecurity 0x83
 #define sTypeSmartwaresSwitchRadiator 0x84
 
 #define sTypeRAINWU 0x70	 //Weather Underground (Total rain reported, no counter)
+#define sTypeRAINByRate 0x71	 //DarkSky for example (Only rate, no total, no counter) rate in mm/hour x 10000, so all decimals will fit
 
 #define sTypeTHBFloat 0x10   //Weather Station
 #define sTypeWINDNoTemp 0x30    //Weather Station
+#define sTypeWINDNoTempNoChill 0x31    //Weather Station
 
 #define wsbaroforcast_heavy_snow 0x01
 #define wsbaroforcast_snow 0x01
@@ -26,11 +40,6 @@
 #define bmpbaroforecast_thunderstorm	0x04
 #define bmpbaroforecast_unknown			0x05
 #define bmpbaroforecast_rain			0x06 //when forecast was cloudy and pressure is below 1010 we have 50%+ change of rain
-
-#define pTypeLimitlessLights	0xF1
-#define sTypeLimitlessRGBW		0x01
-#define sTypeLimitlessRGB		0x02
-#define sTypeLimitlessWhite		0x03
 
 #define pTypeThermostat			0xF2
 #define sTypeThermSetpoint		0x01
@@ -56,12 +65,15 @@
 #define sTypeAlert					0x16
 #define sTypeCurrent				0x17
 #define sTypeSoundLevel				0x18
-#define sTypeSwitch					0x19
+#define sTypeUV						0x19
 #define sTypeBaro					0x1A
 #define sTypeDistance				0x1B
 #define sTypeCounterIncremental		0x1C
 #define sTypeKwh					0x1D
 #define sTypeWaterflow				0x1E
+#define sTypeCustom					0x1F
+#define sTypeZWaveAlarm				0x20
+#define sTypeManagedCounter			0x21
 
 //General Switch
 #define pTypeGeneralSwitch			0xF4
@@ -119,7 +131,7 @@
 #define sSwitchTypeBrel				0x39
 #define sSwitchTypeRTS   			0x3a
 #define sSwitchTypeElroDB			0x3b
-#define sSwitchTypeAOK				0x3c
+#define sSwitchTypeDooya			0x3c
 #define sSwitchTypeUnitec			0x3d
 #define sSwitchTypeSelector			0x3e
 #define sSwitchTypeMaclean			0x3f
@@ -127,11 +139,60 @@
 #define sSwitchTypeDiya				0x41
 #define sSwitchTypeX10secu			0x42
 #define sSwitchTypeAtlantic			0x43
-#define sSwitchTypeSilvercrestDB	0x44 
+#define sSwitchTypeSilvercrestDB	0x44
 #define sSwitchTypeMedionDB			0x45
 #define sSwitchTypeVMC				0x46
 #define sSwitchTypeKeeloq			0x47
 #define sSwitchCustomSwitch			0x48
+#define sSwitchGeneralSwitch		0x49
+#define sSwitchTypeKoch				0x4a
+#define sSwitchTypeKingpin			0x4b
+#define sSwitchTypeFunkbus			0x4c
+#define sSwitchTypeNice				0x4d
+#define sSwitchTypeForest			0x4e
+#define sSwitchBlindsT1				0x4f
+#define sSwitchMC145026				0x50
+#define sSwitchLobeco				0x51
+#define sSwitchFriedland			0x52
+#define sSwitchBFT					0x53
+#define sSwitchNovatys				0x54
+#define sSwitchHalemeier			0x55
+#define sSwitchGaposa				0x56
+#define sSwitchMiLightv1			0x57
+#define sSwitchMiLightv2			0x58
+#define sSwitchHT6P20				0x59
+#define sSwitchTypeDoitrand			0x5a
+#define sSwitchTypeWarema			0x5b
+#define sSwitchTypeAnsluta			0x5c
+#define sSwitchTypeLivcol			0x5d
+#define sSwitchTypeBosch			0x5e
+#define sSwitchTypeNingbo			0x5f
+#define sSwitchTypeDitec			0x60
+#define sSwitchTypeSteffen			0x61
+#define sSwitchTypeAlectoSA			0x62
+#define sSwitchTypeGPIOset			0x63
+#define sSwitchLightT1				0x64
+#define sSwitchTypeKonigSec			0x65
+#define sSwitchTypeRM174RF			0x66
+#define sSwitchTypeLiwin			0x67
+#define sSwitchAuxiliaryT1			0x68
+#define sSwitchBlindsT2				0x69
+#define sSwitchLightT2				0x70
+#define sSwitchContactT1			0x71
+#define sSwitchTypeYW_Secu			0x6a
+#define sSwitchTypeMertik_GV60		0x6b
+#define sSwitchTypeNingbo64			0x6c
+#define sSwitchTypeX2D				0x6d
+#define sSwitchTypeHRCMotor			0x6e
+#define sSwitchTypeVelleman			0x6f
+#define sSwitchTypeRFCustom			0x72
+#define sSwitchTypeYW_Sensor		0x73
+#define sSwitchTypeLegrandcad		0x74
+#define sSwitchTypeSysfsGpio		0x75
+#define sSwitchTypeHager			0x76
+#define sSwitchTypeFaber			0x77
+#define sSwitchTypeDrayton			0x78
+#define sSwitchTypeV2Phoenix		0x79
 
 //Switch commands
 #define gswitch_sOff				0x00
@@ -159,6 +220,10 @@
 #define gswitch_sPlayPlaylist		0x16
 #define gswitch_sPlayFavorites		0x17
 #define gswitch_sExecute			0x18
+#define gswitch_sColor				0x19
+#define gswitch_sDiscop				0x1a
+#define gswitch_sDiscom				0x1b
+
 //--------------
 
 #define pTypeLux		0xF6
@@ -191,13 +256,11 @@
 #define sTypeRego6XXStatus   0x02
 #define sTypeRego6XXCounter  0x03
 
-//Z-Wave
-//#define pTypeENERGY 0x5A
-#define sTypeZWaveUsage 0xA0
-#define sTypeZWaveSwitch 0xA1
+//RFY2 (protocol v2)
+#define sTypeRFY2			0xFE
 
 //types for evohome
-#define pTypeEvohome 0x45 
+#define pTypeEvohome 0x45
 #define sTypeEvohome 0x00 //Controller
 
 #define pTypeEvohomeZone 0x46 //Seems easier to define a new type here
@@ -207,85 +270,131 @@
 #define sTypeEvohomeWater 0x00 //Hot water (Ideally this would just be a zone but for whatever reason evohome treats this differently)
 
 #define pTypeEvohomeRelay 0x44 //Relay
-#define sTypeEvohomeRelay 0x00 
+#define sTypeEvohomeRelay 0x00
 
 //#define sTypeEvohomeOutside 0x30 //If connected
 //#define sTypeEvohomeStatus 0x40 //Not sure if we can do this in 1 sensor would be for things like zone valve status, boiler relay status (maybe OT values too) and comms errors (maybe seperature sensor or switch for each is easiest)
 
 typedef struct _tThermostat {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	BYTE	id1;
-	BYTE	id2;
-	BYTE	id3;
-	BYTE	id4;
-	unsigned char dunit;
-	unsigned char battery_level;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	id4;
+	uint8_t dunit;
+	uint8_t battery_level;
 	float temp;
 	float temp1;
 	float temp2;
 	float temp3;
-	unsigned char utemp1;
-	unsigned char utemp2;
-	unsigned char utemp3;
+	uint8_t utemp1;
+	uint8_t utemp2;
+	uint8_t utemp3;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("id4", id4);
+		ar & cereal::make_nvp("dunit", dunit);
+		ar & cereal::make_nvp("battery_level", battery_level);
+		ar & cereal::make_nvp("temp", temp);
+		ar & cereal::make_nvp("temp1", temp1);
+		ar & cereal::make_nvp("temp2", temp2);
+		ar & cereal::make_nvp("temp3", temp3);
+		ar & cereal::make_nvp("utemp1", utemp1);
+		ar & cereal::make_nvp("utemp2", utemp2);
+		ar & cereal::make_nvp("utemp3", utemp3);
+	}
 
 	_tThermostat()
 	{
-		len=sizeof(_tThermostat)-1;
-		type=pTypeThermostat;
-		subtype=sTypeThermTemperature;
-		battery_level=255;
-		id1=1;
-		id2=0;
-		id3=0;
-		id4=0;
-		dunit=0;
-		temp=0;
-		temp1=0;
-		temp2=0;
-		temp3=0;
-		utemp1=0;
-		utemp2=0;
-		utemp3=0;
+		len = sizeof(_tThermostat) - 1;
+		type = pTypeThermostat;
+		subtype = sTypeThermTemperature;
+		battery_level = 255;
+		id1 = 1;
+		id2 = 0;
+		id3 = 0;
+		id4 = 0;
+		dunit = 0;
+		temp = 0;
+		temp1 = 0;
+		temp2 = 0;
+		temp3 = 0;
+		utemp1 = 0;
+		utemp2 = 0;
+		utemp3 = 0;
 	}
 } tThermostat;
 
 typedef struct _tTempBaro {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	BYTE	id1;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
 	float temp;
 	float baro;
 	float altitude;
-	unsigned char forecast;
+	uint8_t forecast;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("temp", temp);
+		ar & cereal::make_nvp("baro", baro);
+		ar & cereal::make_nvp("altitude", altitude);
+		ar & cereal::make_nvp("forecast", forecast);
+	}
 
 	_tTempBaro()
 	{
-		len=sizeof(_tTempBaro)-1;
-		type=pTypeTEMP_BARO;
-		subtype=sTypeBMP085;
-		id1=1;
-		temp=0;
-		baro=0;
-		altitude=0;
-		forecast=0;
+		len = sizeof(_tTempBaro) - 1;
+		type = pTypeTEMP_BARO;
+		subtype = sTypeBMP085;
+		id1 = 1;
+		temp = 0;
+		baro = 0;
+		altitude = 0;
+		forecast = 0;
 	}
 } _tTempBaro;
 
 typedef struct _tAirQualityMeter {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	BYTE	id1;
-	BYTE	id2;
-	int airquality;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	int32_t airquality;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("airquality", airquality);
+	}
+
 	_tAirQualityMeter()
 	{
-		len=sizeof(_tAirQualityMeter)-1;
-		type=pTypeAirQuality;
-		subtype=sTypeVoltcraft;
+		len = sizeof(_tAirQualityMeter) - 1;
+		type = pTypeAirQuality;
+		subtype = sTypeVoltcraft;
 		id1 = 0;
 		id2 = 1;
 		airquality = 0;
@@ -293,92 +402,156 @@ typedef struct _tAirQualityMeter {
 } AirQualityMeter;
 
 typedef struct _tUsageMeter {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	BYTE	id1;
-	BYTE	id2;
-	BYTE	id3;
-	BYTE	id4;
-	unsigned char dunit;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	id4;
+	uint8_t dunit;
 	float fusage;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("id4", id4);
+		ar & cereal::make_nvp("dunit", dunit);
+		ar & cereal::make_nvp("fusage", fusage);
+	}
 
 	_tUsageMeter()
 	{
-		len=sizeof(_tUsageMeter)-1;
-		type=pTypeUsage;
-		subtype=sTypeElectric;
-		id1=0;
-		id2=0;
-		id3=0;
-		id4=0;
-		dunit=0;
-		fusage=0;
+		len = sizeof(_tUsageMeter) - 1;
+		type = pTypeUsage;
+		subtype = sTypeElectric;
+		id1 = 0;
+		id2 = 0;
+		id3 = 0;
+		id4 = 0;
+		dunit = 0;
+		fusage = 0;
 	}
 } UsageMeter;
 
 typedef struct _tLightMeter {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	BYTE	id1;
-	BYTE	id2;
-	BYTE	id3;
-	BYTE	id4;
-	unsigned char dunit;
-	unsigned char battery_level;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	id4;
+	uint8_t dunit;
+	uint8_t battery_level;
 	float fLux;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("id4", id4);
+		ar & cereal::make_nvp("dunit", dunit);
+		ar & cereal::make_nvp("battery_level", battery_level);
+		ar & cereal::make_nvp("fLux", fLux);
+	}
 
 	_tLightMeter()
 	{
-		len=sizeof(_tLightMeter)-1;
-		type=pTypeLux;
-		subtype=sTypeLux;
-		id1=0;
-		id2=0;
-		id3=0;
-		id4=0;
-		battery_level=255;
-		dunit=0;
-		fLux=0;
+		len = sizeof(_tLightMeter) - 1;
+		type = pTypeLux;
+		subtype = sTypeLux;
+		id1 = 0;
+		id2 = 0;
+		id3 = 0;
+		id4 = 0;
+		battery_level = 255;
+		dunit = 0;
+		fLux = 0;
 	}
 } LightMeter;
 
 typedef struct _tGeneralDevice {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	unsigned char id;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t id;
 	float floatval1;
 	float floatval2;
-	int intval1;
-	int intval2;
+	int32_t intval1;
+	int32_t intval2;
+	char text[64];
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id", id);
+		ar & cereal::make_nvp("floatval1", floatval1);
+		ar & cereal::make_nvp("floatval2", floatval2);
+		ar & cereal::make_nvp("intval1", intval1);
+		ar & cereal::make_nvp("intval2", intval2);
+		ar & cereal::make_nvp("text", text);
+	}
+
 	_tGeneralDevice()
 	{
-		len=sizeof(_tGeneralDevice)-1;
-		type=pTypeGeneral;
-		subtype=sTypeVisibility;
-		id=0;
-		floatval1=0;
-		floatval2=0;
-		intval1=0;
-		intval2=0;
+		len = sizeof(_tGeneralDevice) - 1;
+		type = pTypeGeneral;
+		subtype = sTypeVisibility;
+		id = 0;
+		floatval1 = 0;
+		floatval2 = 0;
+		intval1 = 0;
+		intval2 = 0;
+		text[0] = 0;
 	}
 } GeneralDevice;
 
 typedef struct _tGeneralSwitch {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	int			  id;
-	int			  unitcode;
-	unsigned char cmnd;
-	unsigned char level;
-	unsigned char rssi;
-	unsigned char battery_level;
-	unsigned char seqnbr;
-	int			  reserved_int;
-	float		  reserved_float;
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	int32_t id;
+	int32_t unitcode;
+	uint8_t cmnd;
+	uint8_t level;
+	uint8_t rssi;
+	uint8_t battery_level;
+	uint8_t seqnbr;
+	int32_t reserved_int;
+	float	reserved_float;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id", id);
+		ar & cereal::make_nvp("unitcode", unitcode);
+		ar & cereal::make_nvp("cmnd", cmnd);
+		ar & cereal::make_nvp("level", level);
+		ar & cereal::make_nvp("rssi", rssi);
+		ar & cereal::make_nvp("battery_level", battery_level);
+		ar & cereal::make_nvp("seqnbr", seqnbr);
+		ar & cereal::make_nvp("reserved_int", reserved_int);
+		ar & cereal::make_nvp("reserved_float", reserved_float);
+	}
+
 	_tGeneralSwitch()
 	{
 		len = sizeof(_tGeneralSwitch) - 1;
@@ -389,135 +562,161 @@ typedef struct _tGeneralSwitch {
 		seqnbr = 0;
 		reserved_int = 0;
 		reserved_float = 0;
+		level = 0;
+		battery_level = 255;
+		rssi = 12;
+		cmnd = 0;
 	}
 } GeneralSwitch;
 
 typedef struct _tP1Power {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	unsigned long powerusage1;
-	unsigned long powerusage2;
-	unsigned long powerdeliv1;
-	unsigned long powerdeliv2;
-	unsigned long usagecurrent;
-	unsigned long delivcurrent;
-	int ID;
-	_tP1Power()
+	uint8_t len = sizeof(_tP1Power) - 1;
+	uint8_t type = pTypeP1Power;
+	uint8_t subtype = sTypeP1Power;
+	uint32_t powerusage1 = 0;
+	uint32_t powerusage2 = 0;
+	uint32_t powerdeliv1 = 0;
+	uint32_t powerdeliv2 = 0;
+	uint32_t usagecurrent = 0;
+	uint32_t delivcurrent = 0;
+	int32_t ID = 1;
+
+	template <class Archive>
+	void serialize(Archive & ar)
 	{
-		len = sizeof(_tP1Power) - 1;
-		type = pTypeP1Power;
-		subtype = sTypeP1Power;
-		ID = 1;
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("powerusage1", powerusage1);
+		ar & cereal::make_nvp("powerusage2", powerusage2);
+		ar & cereal::make_nvp("powerdeliv1", powerdeliv1);
+		ar & cereal::make_nvp("powerdeliv2", powerdeliv2);
+		ar & cereal::make_nvp("usagecurrent", usagecurrent);
+		ar & cereal::make_nvp("delivcurrent", delivcurrent);
+		ar & cereal::make_nvp("ID", ID);
 	}
 } P1Power;
 
 typedef struct _tP1Gas {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	unsigned long gasusage;
-	int ID;
-	_tP1Gas()
+	uint8_t len = sizeof(_tP1Gas) - 1;
+	uint8_t type = pTypeP1Gas;
+	uint8_t subtype = sTypeP1Gas;
+	uint32_t gasusage = 0;
+	int32_t ID = 1;
+
+	template <class Archive>
+	void serialize(Archive & ar)
 	{
-		len = sizeof(_tP1Gas) - 1;
-		type = pTypeP1Gas;
-		subtype = sTypeP1Gas;
-		ID = 1;
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("gasusage", gasusage);
+		ar & cereal::make_nvp("ID", ID);
 	}
 } P1Gas;
 
-typedef struct _tLimitlessLights {
-	unsigned char len;
-	unsigned char type;
-	unsigned char subtype;
-	unsigned long id;
-	unsigned char dunit; //0=All, 1=Group1,2=Group2,3=Group3,4=Group4
-	unsigned char command;
-	unsigned char value;
-	_tLimitlessLights()
+typedef struct _tEVOHOME1 {
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	status;
+	uint8_t	mode;
+	uint16_t year;
+	uint8_t	month;
+	uint8_t	day;
+	uint8_t	hrs;
+	uint8_t	mins;
+	uint8_t	action;
+
+	template <class Archive>
+	void serialize(Archive & ar)
 	{
-		id = 1;
-		dunit = 1;
-		len=sizeof(_tLimitlessLights)-1;
-		type=pTypeLimitlessLights;
-		subtype=sTypeLimitlessRGBW;
-		command=0;
-		value=0;
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("status", status);
+		ar & cereal::make_nvp("mode", mode);
+		ar & cereal::make_nvp("year", year);
+		ar & cereal::make_nvp("month", month);
+		ar & cereal::make_nvp("day", day);
+		ar & cereal::make_nvp("hrs", hrs);
+		ar & cereal::make_nvp("mins", mins);
+		ar & cereal::make_nvp("action", action);
 	}
-} _tLimitlessLights;
+} EVOHOME1;
 
-#define Limitless_LedOff 0
-#define Limitless_LedOn 1
-#define Limitless_LedNight 2
-#define Limitless_LedFull 3
-#define Limitless_BrightnessUp 4
-#define Limitless_BrightnessDown 5
-#define Limitless_ColorTempUp 6
-#define Limitless_ColorTempDown 7
-#define Limitless_RGBDiscoNext 8
-#define Limitless_RGBDiscoPrevious 9
-#define Limitless_SetRGBColour 10
-#define Limitless_DiscoSpeedSlower 11
-#define Limitless_DiscoSpeedFaster 12
-#define Limitless_DiscoMode 13
-#define Limitless_SetColorToWhite 14
-#define Limitless_SetBrightnessLevel 15
-#define Limitless_SetBrightUp 16
-#define Limitless_SetBrightDown 17
-#define Limitless_WarmWhiteIncrease 18
-#define Limitless_CoolWhiteIncrease 19
-#define Limitless_NightMode 20
-#define Limitless_FullBrightness 21
-#define Limitless_DiscoSpeedFasterLong 22 //exclude RGB
-#define Limitless_SetHEXColour 23
+typedef struct _tEVOHOME2 {
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	zone;
+	uint8_t	updatetype;
+	int16_t	temperature;
+	uint8_t	mode;
+	uint8_t	controllermode;
+	uint16_t year;
+	uint8_t	month;
+	uint8_t	day;
+	uint8_t	hrs;
+	uint8_t	mins;
+	uint8_t	battery_level;
 
-typedef union tREVOBUF {
-	struct _tEVOHOME1 {
-		unsigned char len;
-		unsigned char type;
-		unsigned char subtype;
-		BYTE	id1;
-		BYTE	id2;
-		BYTE	id3;
-		uint8_t	status;
-		uint8_t	mode;
-		uint16_t year;
-		uint8_t	month;
-		uint8_t	day;
-		uint8_t	hrs;
-		uint8_t	mins;
-		uint8_t	action;
-	} EVOHOME1;
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("zone", zone);
+		ar & cereal::make_nvp("updatetype", updatetype);
+		ar & cereal::make_nvp("temperature", temperature);
+		ar & cereal::make_nvp("mode", mode);
+		ar & cereal::make_nvp("controllermode", controllermode);
+		ar & cereal::make_nvp("year", year);
+		ar & cereal::make_nvp("month", month);
+		ar & cereal::make_nvp("day", day);
+		ar & cereal::make_nvp("hrs", hrs);
+		ar & cereal::make_nvp("mins", mins);
+		ar & cereal::make_nvp("battery_level", battery_level);
+	}
+} EVOHOME2;
 
-	struct _tEVOHOME2 {
-		unsigned char len;
-		unsigned char type;
-		unsigned char subtype;
-		BYTE	id1;
-		BYTE	id2;
-		BYTE	id3;
-		uint8_t	zone;
-		uint8_t	updatetype;
-		int16_t	temperature;
-		uint8_t	mode;
-		uint8_t	controllermode;
-		uint16_t year;
-		uint8_t	month;
-		uint8_t	day;
-		uint8_t	hrs;
-		uint8_t	mins;
-		uint8_t	battery_level;
-	} EVOHOME2;
-	
-	struct _tEVOHOME3 {
-		unsigned char len;
-		unsigned char type;
-		unsigned char subtype;
-		BYTE	id1;
-		BYTE	id2;
-		BYTE	id3;
-		uint8_t	devno;
-		uint8_t	demand;
-	} EVOHOME3;
-} REVOBUF;
+typedef struct _tEVOHOME3 {
+	uint8_t len;
+	uint8_t type;
+	uint8_t subtype;
+	uint8_t	id1;
+	uint8_t	id2;
+	uint8_t	id3;
+	uint8_t	devno;
+	uint8_t	demand;
+	uint8_t	updatetype;
+	uint8_t	battery_level;
+
+	template <class Archive>
+	void serialize(Archive & ar)
+	{
+		ar & cereal::make_nvp("len", len);
+		ar & cereal::make_nvp("type", type);
+		ar & cereal::make_nvp("subtype", subtype);
+		ar & cereal::make_nvp("id1", id1);
+		ar & cereal::make_nvp("id2", id2);
+		ar & cereal::make_nvp("id3", id3);
+		ar & cereal::make_nvp("devno", devno);
+		ar & cereal::make_nvp("demand", demand);
+		ar & cereal::make_nvp("updatetype", updatetype);
+		ar & cereal::make_nvp("battery_level", battery_level);
+	}
+} EVOHOME3;

@@ -7,6 +7,7 @@ class MySensorsBase : public CDomoticzHardwareBase
 {
 	friend class MySensorsSerial;
 	friend class MySensorsTCP;
+	friend class MySensorsMQTT;
 	friend class MQTT;
 public:
 	enum _eMessageType
@@ -59,7 +60,8 @@ public:
 		S_MOISTURE = 35,				//Moisture sensor	V_LEVEL(water content or moisture in percentage ? ), V_TRIPPED, V_ARMED
 		S_INFO = 36,					// LCD text device / Simple information device on controller, V_TEXT
 		S_GAS = 37,						// Gas meter, V_FLOW, V_VOLUME
-
+		S_GPS = 38,						//!< GPS Sensor, V_POSITION
+		S_WATER_QUALITY = 39,			//!< V_TEMP, V_PH, V_ORP, V_EC, V_STATUS
 		S_UNKNOWN = 200,				//No Type received
 	};
 
@@ -115,9 +117,15 @@ public:
 		V_HVAC_SETPOINT_HEAT = 45,		//HVAC / Heater setpoint(Integer between 0 - 100)	S_HVAC, S_HEATER
 		V_HVAC_FLOW_MODE = 46,			//Flow mode for HVAC("Auto", "ContinuousOn", "PeriodicOn")	S_HVAC
 		V_TEXT = 47,					//Text/Info message S_INFO
-		V_CUSTOM = 48, 					// Custom messages used for controller/inter node specific commands, preferably using S_CUSTOM device type. 
+		V_CUSTOM = 48, 					// Custom messages used for controller/inter node specific commands, preferably using S_CUSTOM device type.
 		V_POSITION = 49,				// GPS position and altitude. Payload: latitude;longitude;altitude(m). E.g. "55.722526;13.017972;18"
 		V_IR_RECORD = 50,				// Record IR codes S_IR for playback
+		V_PH = 51,						//!< S_WATER_QUALITY, water PH
+		V_ORP = 52,						//!< S_WATER_QUALITY, water ORP : redox potential in mV
+		V_EC = 53,						//!< S_WATER_QUALITY, water electric conductivity ?S/cm (microSiemens/cm)
+		V_VAR = 54,						//!< S_POWER, Reactive power: volt-ampere reactive (var)
+		V_VA = 55,						//!< S_POWER, Apparent power: volt-ampere (VA)
+		V_POWER_FACTOR = 56,			//!< S_POWER, Ratio of real power to apparent power: floating point value in the range [-1,..,1]
 		V_UNKNOWN = 200					//No value received
 	};
 
@@ -142,7 +150,21 @@ public:
 		I_GET_NONCE = 16,				//Used between sensors when requesting nonce.
 		I_GET_NONCE_RESPONSE = 17,		//Used between sensors for nonce response.
 		I_HEARTBEAT = 18,
-		I_PRESENTATION = 19
+		I_PRESENTATION = 19,
+		I_DISCOVER = 20,
+		I_DISCOVER_RESPONSE = 21,
+		I_HEARTBEAT_RESPONSE = 22,
+		I_LOCKED = 23,					//!< Node is locked (reason in string-payload)
+		I_PING = 24,	//!< Ping sent to node, payload incremental hop counter
+		I_PONG = 25,	//!< In return to ping, sent back to sender, payload incremental hop counter
+		I_REGISTRATION_REQUEST = 26,	//!< Register request to GW
+		I_REGISTRATION_RESPONSE = 27,	//!< Register response from GW
+		I_DEBUG = 28,	//!< Debug message
+		I_SIGNAL_REPORT_REQUEST = 29,	//!< Device signal strength request
+		I_SIGNAL_REPORT_REVERSE = 30,	//!< Internal
+		I_SIGNAL_REPORT_RESPONSE = 31,	//!< Device signal strength response (RSSI)
+		I_PRE_SLEEP_NOTIFICATION = 32,	//!< Message sent before node is going to sleep
+		I_POST_SLEEP_NOTIFICATION = 33	//!< Message sent after node woke up (if enabled)
 	};
 
 	struct _tMySensorValue
@@ -151,13 +173,18 @@ public:
 		int intvalue;
 		bool bValidValue;
 		std::string stringValue;
+		bool bFloatValue;
+		bool bIntValue;
+		bool bStringValue;
 		time_t lastreceived;
-
 		_tMySensorValue()
 		{
 			floatValue = 0;
 			intvalue = 0;
 			bValidValue = false;
+			bFloatValue = false;
+			bIntValue = false;
+			bStringValue = false;
 			lastreceived = 0;
 		}
 	};
@@ -166,10 +193,12 @@ public:
 	{
 		int nodeID;
 		int childID;
+		int groupID;
 
 		_ePresentationType presType;
 		std::string childName;
 		bool useAck;
+		int ackTimeout;
 
 		//values
 		std::map<_eSetType, _tMySensorValue> values;
@@ -184,18 +213,45 @@ public:
 			lastreceived = 0;
 			nodeID = -1;
 			childID = 1;
+			groupID = 1;
 			hasBattery = false;
 			batValue = 255;
 			presType = S_UNKNOWN;
 			useAck = false;
+			ackTimeout = 0;
 		}
 		std::vector<_eSetType> GetChildValueTypes()
 		{
 			std::vector<_eSetType> ret;
-			std::map<_eSetType, _tMySensorValue>::const_iterator itt;
-			for (itt = values.begin(); itt != values.end(); ++itt)
+			for (const auto & itt : values)
 			{
-				ret.push_back(itt->first);
+				ret.push_back(itt.first);
+			}
+			return ret;
+		}
+		std::vector<std::string> GetChildValues()
+		{
+			std::vector<std::string> ret;
+			for (const auto & itt : values)
+			{
+				std::stringstream sstr;
+				if (itt.second.bFloatValue)
+				{
+					sstr << itt.second.floatValue;
+				}
+				else if (itt.second.bIntValue)
+				{
+					sstr << itt.second.intvalue;
+				}
+				else if (itt.second.bStringValue)
+				{
+					sstr << itt.second.stringValue;
+				}
+				else
+				{
+					sstr << "??";
+				}
+				ret.push_back(sstr.str());
 			}
 			return ret;
 		}
@@ -236,19 +292,43 @@ public:
 		{
 			values[vType].intvalue = intValue;
 			values[vType].bValidValue = true;
+			values[vType].bIntValue = true;
 			values[vType].lastreceived = time(NULL);
 		}
 		void SetValue(const _eSetType vType, const float floatValue)
 		{
 			values[vType].floatValue = floatValue;
 			values[vType].bValidValue = true;
+			values[vType].bFloatValue = true;
 			values[vType].lastreceived = time(NULL);
 		}
 		void SetValue(const _eSetType vType, const std::string &stringValue)
 		{
 			values[vType].stringValue = stringValue;
 			values[vType].bValidValue = true;
+			values[vType].bStringValue = true;
 			values[vType].lastreceived = time(NULL);
+		}
+	};
+
+	struct _tMySensorSmartSleepQueueItem
+	{
+		int _NodeID;
+		int _ChildID;
+		_eMessageType _messageType;
+		_eSetType _SubType;
+		std::string _Payload;
+		bool _bUseAck;
+		int _AckTimeout;
+		_tMySensorSmartSleepQueueItem(const int NodeID, const int ChildID, const _eMessageType messageType, const _eSetType SubType, const std::string &Payload, const bool bUseAck, const int AckTimeout):
+			_Payload(Payload)
+		{
+			_NodeID = NodeID;
+			_ChildID = ChildID;
+			_messageType = messageType;
+			_SubType = SubType;
+			_bUseAck = bUseAck;
+			_AckTimeout = AckTimeout;
 		}
 	};
 
@@ -267,45 +347,41 @@ public:
 		}
 		_tMySensorChild* FindChildWithPresentationType(const _ePresentationType cType)
 		{
-			std::vector<_tMySensorChild>::iterator itt;
-			for (itt = m_childs.begin(); itt != m_childs.end(); ++itt)
+			for (auto & itt : m_childs)
 			{
-				if (itt->presType == cType)
+				if (itt.presType == cType)
 				{
-					return &*itt;
+					return &itt;
 				}
 			}
 			return NULL;
 		}
 		_tMySensorChild* FindChildWithPresentationType(const int ChildID, const _ePresentationType cType)
 		{
-			std::vector<_tMySensorChild>::iterator itt;
-			for (itt = m_childs.begin(); itt != m_childs.end(); ++itt)
+			for (auto & itt : m_childs)
 			{
-				if ((itt->childID == ChildID) &&
-					(itt->presType == cType)
+				if ((itt.childID == ChildID) &&
+					(itt.presType == cType)
 					)
 				{
-					return &*itt;
+					return &itt;
 				}
 			}
 			return NULL;
 		}
 		_tMySensorChild* FindChildWithValueType(const int ChildID, const _eSetType valType)
 		{
-			std::vector<_tMySensorChild>::iterator itt;
-			for (itt = m_childs.begin(); itt != m_childs.end(); ++itt)
+			for (auto & itt : m_childs)
 			{
-				if (itt->childID == ChildID)
+				if (itt.childID == ChildID)
 				{
-					std::map<_eSetType, _tMySensorValue>::const_iterator itt2;
-					for (itt2 = itt->values.begin(); itt2 != itt->values.end(); ++itt2)
+					for (const auto & itt2 : itt.values)
 					{
-						if (itt2->first == valType)
+						if (itt2.first == valType)
 						{
-							if (!itt2->second.bValidValue)
+							if (!itt2.second.bValidValue)
 								return NULL;
-							return &*itt;
+							return &itt;
 						}
 					}
 				}
@@ -314,17 +390,15 @@ public:
 		}
 		_tMySensorChild* FindChildByValueType(const _eSetType valType)
 		{
-			std::vector<_tMySensorChild>::iterator itt;
-			for (itt = m_childs.begin(); itt != m_childs.end(); ++itt)
+			for (auto & itt : m_childs)
 			{
-				std::map<_eSetType, _tMySensorValue>::const_iterator itt2;
-				for (itt2 = itt->values.begin(); itt2 != itt->values.end(); ++itt2)
+				for (const auto & itt2 : itt.values)
 				{
-					if (itt2->first == valType)
+					if (itt2.first == valType)
 					{
-						if (!itt2->second.bValidValue)
+						if (!itt2.second.bValidValue)
 							return NULL;
-						return &*itt;
+						return &itt;
 					}
 				}
 			}
@@ -332,12 +406,11 @@ public:
 		}
 		_tMySensorChild* FindChild(const int ChildID)
 		{
-			std::vector<_tMySensorChild>::iterator itt;
-			for (itt = m_childs.begin(); itt != m_childs.end(); ++itt)
+			for (auto & itt : m_childs)
 			{
-				if (itt->childID == ChildID)
+				if (itt.childID == ChildID)
 				{
-					return &*itt;
+					return &itt;
 				}
 			}
 			return NULL;
@@ -346,32 +419,37 @@ public:
 
 	MySensorsBase(void);
 	~MySensorsBase(void);
-	std::string m_szSerialPort;
-	bool WriteToHardware(const char *pdata, const unsigned char length);
+	bool WriteToHardware(const char *pdata, const unsigned char length) override;
 	_tMySensorNode* FindNode(const int nodeID);
 	void UpdateNode(const int nodeID, const std::string &name);
 	void RemoveNode(const int nodeID);
 	void RemoveChild(const int nodeID, const int childID);
-	void UpdateChild(const int nodeID, const int childID, const bool UseAck);
+	void UpdateChild(const int nodeID, const int childID, const bool UseAck, const int AckTimeout);
 	static std::string GetMySensorsValueTypeStr(const enum _eSetType vType);
 	static std::string GetMySensorsPresentationTypeStr(const enum _ePresentationType pType);
 	std::string GetGatewayVersion();
+	void SendTextSensorValue(const int nodeID, const int childID, const std::string &tvalue);
 private:
 	virtual void WriteInt(const std::string &sendStr) = 0;
 	void ParseData(const unsigned char *pData, int Len);
-	void ParseLine();
+	void ParseLine(const std::string &sLine);
 
 	void UpdateChildDBInfo(const int NodeID, const int ChildID, const _ePresentationType pType, const std::string &Name);
 	bool GetChildDBInfo(const int NodeID, const int ChildID, _ePresentationType &pType, std::string &Name, bool &UseAck);
 
 	void SendCommandInt(const int NodeID, const int ChildID, const _eMessageType messageType, const bool UseAck, const int SubType, const std::string &Payload);
-	bool SendNodeSetCommand(const int NodeID, const int ChildID, const _eMessageType messageType, const _eSetType SubType, const std::string &Payload, const bool bUseAck);
+	bool SendNodeSetCommand(const int NodeID, const int ChildID, const _eMessageType messageType, const _eSetType SubType, const std::string &Payload, const bool bUseAck, const int AckTimeout);
+	bool SendNodeSetCommandImpl(const int NodeID, const int ChildID, const _eMessageType messageType, const _eSetType SubType, const std::string &Payload, const bool bUseAck, const int AckTimeout);
 	void SendNodeCommand(const int NodeID, const int ChildID, const _eMessageType messageType, const int SubType, const std::string &Payload);
 
 
-	void UpdateSwitch(const unsigned char Idx, const int SubUnit, const bool bOn, const double Level, const std::string &defaultname, const int BatLevel);
+	void UpdateSwitch(const _eSetType vType, const unsigned char Idx, const int SubUnit, const bool bOn, const double Level, const std::string &defaultname, const int BatLevel);
 
-	bool GetSwitchValue(const unsigned char Idx, const int SubUnit, const int sub_type, std::string &sSwitchValue);
+	void UpdateSwitchLastUpdate(const unsigned char NodeID, const int ChildID);
+	void UpdateBlindSensorLastUpdate(const int NodeID, const int ChildID);
+	void UpdateRGBWSwitchLastUpdate(const int NodeID, const int ChildID);
+
+	bool GetSwitchValue(const int Idx, const int SubUnit, const int sub_type, std::string &sSwitchValue);
 
 	bool GetBlindsValue(const int NodeID, const int ChildID, int &blind_value);
 
@@ -387,29 +465,29 @@ private:
 	_tMySensorNode* InsertNode(const int nodeID);
 	int FindNextNodeID();
 	_tMySensorChild* FindSensorWithPresentationType(const int nodeID, const _ePresentationType presType);
-	_tMySensorChild* FindChildWithValueType(const int nodeID, const _eSetType valType);
-	void InsertSensor(_tMySensorChild device);
+	_tMySensorChild* FindChildWithValueType(const int nodeID, const _eSetType valType, const int groupID);
 	void UpdateNodeBatteryLevel(const int nodeID, const int Level);
+	void UpdateNodeHeartbeat(const int nodeID);
 
 	void UpdateVar(const int NodeID, const int ChildID, const int VarID, const std::string &svalue);
 	bool GetVar(const int NodeID, const int ChildID, const int VarID, std::string &sValue);
 
-	std::map<int, _tMySensorNode> m_nodes;
-
-	concurrent_queue<std::string > m_sendQueue;
-	boost::shared_ptr<boost::thread> m_send_thread;
 	bool StartSendQueue();
 	void StopSendQueue();
-	void Do_Send_Work();
-
+	void Do_Work();
+private:
+	std::string m_szSerialPort;
+	std::map<int, _tMySensorNode> m_nodes;
+	concurrent_queue<std::string > m_sendQueue;
+	std::shared_ptr<std::thread> m_thread;
 	std::string m_GatewayVersion;
-
 	bool m_bAckReceived;
 	int m_AckNodeID;
 	int m_AckChildID;
 	_eSetType m_AckSetType;
-
-	unsigned char m_buffer[1028];
-	int m_bufferpos;
+	std::string m_LineReceived;
+	std::map<int, bool> m_node_sleep_states;
+	std::map<int, std::vector<_tMySensorSmartSleepQueueItem> > m_node_sleep_queue;
+	std::mutex m_node_sleep_mutex;
 };
 

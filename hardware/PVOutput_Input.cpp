@@ -14,12 +14,11 @@
 
 //#define DEBUG_PVOutputInput
 
-CPVOutputInput::CPVOutputInput(const int ID, const std::string &SID, const std::string &Key)
+CPVOutputInput::CPVOutputInput(const int ID, const std::string &SID, const std::string &Key) :
+m_SID(SID),
+m_KEY(Key)
 {
 	m_HwdID=ID;
-	m_SID=SID;
-	m_KEY=Key;
-	m_stoprequested=false;
 	Init();
 }
 
@@ -33,21 +32,24 @@ void CPVOutputInput::Init()
 
 bool CPVOutputInput::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CPVOutputInput::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CPVOutputInput::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CPVOutputInput::StopHardware()
 {
-	if (m_thread!=NULL)
+	if (m_thread)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
     return true;
@@ -58,13 +60,9 @@ bool CPVOutputInput::StopHardware()
 void CPVOutputInput::Do_Work()
 {
 	int LastMinute=-1;
-	int sec_counter = 0;
 	_log.Log(LOG_STATUS,"PVOutput (Input): Worker started...");
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
-		sec_counter++;
-
 		time_t atime=mytime(NULL);
 		m_LastHeartbeat = atime;
 		struct tm ltime;
@@ -81,48 +79,6 @@ void CPVOutputInput::Do_Work()
 bool CPVOutputInput::WriteToHardware(const char *pdata, const unsigned char length)
 {
 	return false;
-}
-
-void CPVOutputInput::SendTempSensor(const unsigned char Idx, const float Temp, const std::string &defaultname)
-{
-	RBUF tsen;
-	memset(&tsen,0,sizeof(RBUF));
-
-	tsen.TEMP.packetlength=sizeof(tsen.TEMP)-1;
-	tsen.TEMP.packettype=pTypeTEMP;
-	tsen.TEMP.subtype=sTypeTEMP10;
-	tsen.TEMP.battery_level=9;
-	tsen.TEMP.rssi=12;
-	tsen.TEMP.id1=0;
-	tsen.TEMP.id2=Idx;
-
-	tsen.TEMP.tempsign=(Temp>=0)?0:1;
-	int at10=round(abs(Temp*10.0f));
-	tsen.TEMP.temperatureh=(BYTE)(at10/256);
-	at10-=(tsen.TEMP.temperatureh*256);
-	tsen.TEMP.temperaturel=(BYTE)(at10);
-
-	sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP, defaultname.c_str(), 255);
-}
-
-void CPVOutputInput::SendVoltage(const unsigned long Idx, const float Volt, const std::string &defaultname)
-{
-	_tGeneralDevice gDevice;
-	gDevice.subtype=sTypeVoltage;
-	gDevice.id=1;
-	gDevice.floatval1=Volt;
-	gDevice.intval1 = static_cast<int>(Idx);
-	sDecodeRXMessage(this, (const unsigned char *)&gDevice, defaultname.c_str(), 255);
-}
-
-void CPVOutputInput::SendPercentage(const unsigned long Idx, const float Percentage, const std::string &defaultname)
-{
-	_tGeneralDevice gDevice;
-	gDevice.subtype=sTypePercentage;
-	gDevice.id=1;
-	gDevice.floatval1=Percentage;
-	gDevice.intval1 = static_cast<int>(Idx);
-	sDecodeRXMessage(this, (const unsigned char *)&gDevice, defaultname.c_str(), 255);
 }
 
 void CPVOutputInput::GetMeterDetails()
@@ -168,18 +124,18 @@ void CPVOutputInput::GetMeterDetails()
 		double Efficiency=atof(splitresult[6].c_str())*100.0;
 		if (Efficiency>100.0)
 			Efficiency=100.0;
-		SendPercentage(1,float(Efficiency),"Efficiency");
+		SendPercentageSensor(1, 0, 255, float(Efficiency), "Efficiency");
 	}
 	if (splitresult[7]!="NaN")
 	{
 		double Temperature=atof(splitresult[7].c_str());
-		SendTempSensor(1,float(Temperature),"Temperature");
+		SendTempSensor(1, 255, float(Temperature), "Temperature");
 	}
 	if (splitresult[8]!="NaN")
 	{
 		double Voltage=atof(splitresult[8].c_str());
-		if (Voltage>=0)
-			SendVoltage(1,float(Voltage),"Voltage");
+		if (Voltage >= 0)
+			SendVoltageSensor(0, 1, 255, float(Voltage), "Voltage");
 	}
 
 	sstr.clear();

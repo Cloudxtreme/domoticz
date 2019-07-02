@@ -5,7 +5,6 @@
 #include "hardwaretypes.h"
 #include "../main/localtime_r.h"
 #include "../main/WebServerHelper.h"
-#include "../json/json.h"
 #include "../main/RFXtrx.h"
 #include "../main/SQLHelper.h"
 #include "../httpclient/HTTPClient.h"
@@ -60,7 +59,6 @@ std::string ReadFile(std::string filename)
 
 CThermosmart::CThermosmart(const int ID, const std::string &Username, const std::string &Password, const int Mode1, const int Mode2, const int Mode3, const int Mode4, const int Mode5, const int Mode6)
 {
-	m_UserName = "";
 	if ((Password == "secret")|| (Password.empty()))
 	{
 		_log.Log(LOG_ERROR, "Thermosmart: Please update your username/password!...");
@@ -74,6 +72,7 @@ CThermosmart::CThermosmart(const int ID, const std::string &Username, const std:
 	}
 	m_HwdID=ID;
 	m_OutsideTemperatureIdx = 0; //use build in
+	m_LastMinute = -1;
 	SetModes(Mode1, Mode2, Mode3, Mode4, Mode5, Mode6);
 	Init();
 }
@@ -91,32 +90,32 @@ void CThermosmart::Init()
 {
 	m_AccessToken = "";
 	m_ThermostatID = "";
-	m_stoprequested = false;
 	m_bDoLogin = true;
 }
 
 bool CThermosmart::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	m_LastMinute = -1;
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CThermosmart::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CThermosmart::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CThermosmart::StopHardware()
 {
-	if (m_thread!=NULL)
+	if (m_thread)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
-	if (!m_bDoLogin)
-		Logout();
     return true;
 }
 
@@ -126,9 +125,8 @@ void CThermosmart::Do_Work()
 {
 	_log.Log(LOG_STATUS,"Thermosmart: Worker started...");
 	int sec_counter = THERMOSMART_POLL_INTERVAL-5;
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
 		if (sec_counter % 12 == 0) {
 			m_LastHeartbeat=mytime(NULL);
@@ -139,6 +137,8 @@ void CThermosmart::Do_Work()
 			GetMeterDetails();
 		}
 	}
+	Logout();
+
 	_log.Log(LOG_STATUS,"Thermosmart: Worker stopped...");
 }
 
@@ -147,9 +147,7 @@ bool CThermosmart::GetOutsideTemperatureFromDomoticz(float &tvalue)
 	if (m_OutsideTemperatureIdx == 0)
 		return false;
 	Json::Value tempjson;
-	std::stringstream sstr;
-	sstr << m_OutsideTemperatureIdx;
-	m_webservers.GetJSonDevices(tempjson, "", "temp", "ID", sstr.str(), "", "", true, 0, "");
+	m_webservers.GetJSonDevices(tempjson, "", "temp", "ID", std::to_string(m_OutsideTemperatureIdx), "", "", true, false, false, 0, "");
 
 	size_t tsize = tempjson.size();
 	if (tsize < 1)
@@ -169,18 +167,6 @@ bool CThermosmart::GetOutsideTemperatureFromDomoticz(float &tvalue)
 
 void CThermosmart::SendSetPointSensor(const unsigned char Idx, const float Temp, const std::string &defaultname)
 {
-	bool bDeviceExits=true;
-
-	char szID[10];
-	sprintf(szID,"%X%02X%02X%02X", 0, 0, 0, Idx);
-
-	std::vector<std::vector<std::string> > result;
-	result=m_sql.safe_query("SELECT Name FROM DeviceStatus WHERE (HardwareID==%d) AND (DeviceID=='%q')", m_HwdID, szID);
-	if (result.size()<1)
-	{
-		bDeviceExits=false;
-	}
-
 	_tThermostat thermos;
 	thermos.subtype=sTypeThermSetpoint;
 	thermos.id1=0;
@@ -188,12 +174,9 @@ void CThermosmart::SendSetPointSensor(const unsigned char Idx, const float Temp,
 	thermos.id3=0;
 	thermos.id4=Idx;
 	thermos.dunit=0;
-
 	thermos.temp=Temp;
-
 	sDecodeRXMessage(this, (const unsigned char *)&thermos, "Setpoint", 255);
 }
-
 
 bool CThermosmart::Login()
 {
@@ -297,7 +280,7 @@ bool CThermosmart::Login()
 	Json::Value root;
 	Json::Reader jReader;
 	bool ret = jReader.parse(sResult, root);
-	if (!ret)
+	if ((!ret) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "Thermosmart: Invalid/no data received...");
 		return false;
@@ -330,7 +313,7 @@ void CThermosmart::Logout()
 
 bool CThermosmart::WriteToHardware(const char *pdata, const unsigned char length)
 {
-	tRBUF *pCmd = (tRBUF *)pdata;
+	const tRBUF *pCmd = reinterpret_cast<const tRBUF *>(pdata);
 	if (pCmd->LIGHTING2.packettype == pTypeLighting2)
 	{
 		//Light command
@@ -354,7 +337,7 @@ void CThermosmart::GetMeterDetails()
 	std::string sResult;
 #ifdef DEBUG_ThermosmartThermostat_read
 	sResult = ReadFile("E:\\thermosmart_getdata.txt");
-#else	
+#else
 	if (m_bDoLogin)
 	{
 		if (!Login())
@@ -377,7 +360,7 @@ void CThermosmart::GetMeterDetails()
 	Json::Value root;
 	Json::Reader jReader;
 	bool ret = jReader.parse(sResult, root);
-	if (!ret)
+	if ((!ret) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "Thermosmart: Invalid/no data received...");
 		m_bDoLogin = true;

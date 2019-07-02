@@ -4,7 +4,6 @@
 #include "../main/Logger.h"
 #include "hardwaretypes.h"
 #include "../main/localtime_r.h"
-#include "../json/json.h"
 #include "../main/RFXtrx.h"
 #include "../main/SQLHelper.h"
 #include "../httpclient/HTTPClient.h"
@@ -17,9 +16,11 @@ const std::string NEST_LOGIN_PATH = "https://home.nest.com/user/login";
 const std::string NEST_GET_STATUS = "/v2/mobile/user.";
 const std::string NEST_SET_SHARED = "/v2/put/shared.";
 const std::string NEST_SET_STRUCTURE = "/v2/put/structure.";
+const std::string NEST_SET_DEVICE = "/v2/put/device.";
 
 #ifdef _DEBUG
 	//#define DEBUG_NextThermostatR
+	//#define DEBUG_NextThermostatW
 #endif
 
 #ifdef DEBUG_NextThermostatW
@@ -57,8 +58,6 @@ m_UserName(CURLEncode::URLEncode(Username)),
 m_Password(CURLEncode::URLEncode(Password))
 {
 	m_HwdID=ID;
-	m_AccessToken = "";
-	m_UserID = "";
 	Init();
 }
 
@@ -70,43 +69,42 @@ void CNest::Init()
 {
 	m_AccessToken = "";
 	m_UserID = "";
-	m_stoprequested = false;
 	m_bDoLogin = true;
 }
 
 bool CNest::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CNest::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CNest::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CNest::StopHardware()
 {
-	if (m_thread!=NULL)
+	if (m_thread)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
-	if (!m_bDoLogin)
-		Logout();
     return true;
 }
 
-#define NEST_POLL_INTERVAL 30
+#define NEST_POLL_INTERVAL 60
 
 void CNest::Do_Work()
 {
 	_log.Log(LOG_STATUS,"Nest: Worker started...");
 	int sec_counter = NEST_POLL_INTERVAL-5;
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
 		if (sec_counter % 12 == 0)
 		{
@@ -119,6 +117,7 @@ void CNest::Do_Work()
 		}
 
 	}
+	Logout();
 	_log.Log(LOG_STATUS,"Nest: Worker stopped...");
 }
 
@@ -137,6 +136,53 @@ void CNest::SendSetPointSensor(const unsigned char Idx, const float Temp, const 
 	sDecodeRXMessage(this, (const unsigned char *)&thermos, defaultname.c_str(), 255);
 }
 
+
+// Creates and updates switch used to log Heating and/or Colling.
+void CNest::UpdateSwitch(const unsigned char Idx, const bool bOn, const std::string &defaultname)
+{
+	bool bDeviceExits = true;
+	char szIdx[10];
+	sprintf(szIdx, "%X%02X%02X%02X", 0, 0, 0, Idx);
+	std::vector<std::vector<std::string> > result;
+	result = m_sql.safe_query("SELECT Name,nValue,sValue FROM DeviceStatus WHERE (HardwareID==%d) AND (Type==%d) AND (SubType==%d) AND (DeviceID=='%q')",
+		m_HwdID, pTypeLighting2, sTypeAC, szIdx);
+	if (!result.empty())
+	{
+		//check if we have a change, if not do not update it
+		int nvalue = atoi(result[0][1].c_str());
+		if ((!bOn) && (nvalue == 0))
+			return;
+		if ((bOn && (nvalue != 0)))
+			return;
+	}
+
+	//Send as Lighting 2
+	tRBUF lcmd;
+	memset(&lcmd, 0, sizeof(RBUF));
+	lcmd.LIGHTING2.packetlength = sizeof(lcmd.LIGHTING2) - 1;
+	lcmd.LIGHTING2.packettype = pTypeLighting2;
+	lcmd.LIGHTING2.subtype = sTypeAC;
+	lcmd.LIGHTING2.id1 = 0;
+	lcmd.LIGHTING2.id2 = 0;
+	lcmd.LIGHTING2.id3 = 0;
+	lcmd.LIGHTING2.id4 = Idx;
+	lcmd.LIGHTING2.unitcode = 1;
+	int level = 15;
+	if (!bOn)
+	{
+		level = 0;
+		lcmd.LIGHTING2.cmnd = light2_sOff;
+	}
+	else
+	{
+		level = 15;
+		lcmd.LIGHTING2.cmnd = light2_sOn;
+	}
+	lcmd.LIGHTING2.level = level;
+	lcmd.LIGHTING2.filler = 0;
+	lcmd.LIGHTING2.rssi = 12;
+	sDecodeRXMessage(this, (const unsigned char *)&lcmd.LIGHTING2, defaultname.c_str(), 255);
+}
 
 bool CNest::Login()
 {
@@ -163,12 +209,12 @@ bool CNest::Login()
 
 	Json::Value root;
 	Json::Reader jReader;
-	if (!jReader.parse(sResult, root))
+	bool bRet = jReader.parse(sResult, root);
+	if ((!bRet) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "Nest: Invalid data received, or invalid username/password!");
 		return false;
 	}
-
 	if (root["urls"].empty())
 	{
 		_log.Log(LOG_ERROR, "Nest: Invalid data received, or invalid username/password!");
@@ -187,7 +233,7 @@ bool CNest::Login()
 		return false;
 	}
 	m_AccessToken = root["access_token"].asString();
-	
+
 	if (root["userid"].empty())
 	{
 		_log.Log(LOG_ERROR, "Nest: Invalid data received, or invalid username/password!");
@@ -216,7 +262,7 @@ bool CNest::WriteToHardware(const char *pdata, const unsigned char length)
 	if (m_Password.size() == 0)
 		return false;
 
-	tRBUF *pCmd = (tRBUF *)pdata;
+	const tRBUF *pCmd = reinterpret_cast<const tRBUF *>(pdata);
 	if (pCmd->LIGHTING2.packettype != pTypeLighting2)
 		return false; //later add RGB support, if someone can provide access
 
@@ -230,6 +276,12 @@ bool CNest::WriteToHardware(const char *pdata, const unsigned char length)
 		return SetAway(node_id, bIsOn);
 	}
 
+	if (node_id % 4 == 0)
+	{
+		//Manual Eco Mode
+		return SetManualEcoMode(node_id, bIsOn);
+	}
+
 	return false;
 }
 
@@ -237,21 +289,35 @@ void CNest::UpdateSmokeSensor(const unsigned char Idx, const bool bOn, const std
 {
 	bool bDeviceExits = true;
 	char szIdx[10];
-	sprintf(szIdx, "%X%02X%02X%02X", 0, 0, 0, Idx);
+	sprintf(szIdx, "%X%02X%02X%02X", 0, 0, Idx, 0);
 	std::vector<std::vector<std::string> > result;
 	result = m_sql.safe_query("SELECT Name,nValue,sValue FROM DeviceStatus WHERE (HardwareID==%d) AND (DeviceID=='%q')", m_HwdID, szIdx);
-	if (result.size() < 1)
+	if (result.empty())
 	{
 		bDeviceExits = false;
 	}
 	else
 	{
-		//check if we have a change, if not do not update it
+		//check if we have a change, if not only update the LastUpdate field
+		bool bNoChange = false;
 		int nvalue = atoi(result[0][1].c_str());
 		if ((!bOn) && (nvalue == 0))
+			bNoChange = true;
+		else if ((bOn && (nvalue != 0)))
+			bNoChange = true;
+		if (bNoChange)
+		{
+			time_t now = time(0);
+			struct tm ltime;
+			localtime_r(&now, &ltime);
+
+			char szLastUpdate[40];
+			sprintf(szLastUpdate, "%04d-%02d-%02d %02d:%02d:%02d", ltime.tm_year + 1900, ltime.tm_mon + 1, ltime.tm_mday, ltime.tm_hour, ltime.tm_min, ltime.tm_sec);
+
+			m_sql.safe_query("UPDATE DeviceStatus SET LastUpdate='%q' WHERE(HardwareID == %d) AND (DeviceID == '%q')",
+				szLastUpdate, m_HwdID, szIdx);
 			return;
-		if ((bOn && (nvalue != 0)))
-			return;
+		}
 	}
 
 	//Send as Lighting 2
@@ -262,8 +328,8 @@ void CNest::UpdateSmokeSensor(const unsigned char Idx, const bool bOn, const std
 	lcmd.LIGHTING2.subtype = sTypeAC;
 	lcmd.LIGHTING2.id1 = 0;
 	lcmd.LIGHTING2.id2 = 0;
-	lcmd.LIGHTING2.id3 = 0;
-	lcmd.LIGHTING2.id4 = Idx;
+	lcmd.LIGHTING2.id3 = Idx;
+	lcmd.LIGHTING2.id4 = 0;
 	lcmd.LIGHTING2.unitcode = 1;
 	int level = 15;
 	if (!bOn)
@@ -300,7 +366,7 @@ void CNest::GetMeterDetails()
 {
 	std::string sResult;
 #ifdef DEBUG_NextThermostatR
-	sResult = ReadFile("E:\\Nest_DoubleTherm.json");
+	sResult = ReadFile("E:\\nest.json");
 #else
 	if (m_UserName.size()==0)
 		return;
@@ -328,15 +394,19 @@ void CNest::GetMeterDetails()
 	}
 #endif
 
+#ifdef DEBUG_NextThermostatW
+	SaveString2Disk(sResult, "E:\\nest.json");
+#endif
+
 	Json::Value root;
 	Json::Reader jReader;
-	if (!jReader.parse(sResult, root))
+	bool bRet = jReader.parse(sResult, root);
+	if ((!bRet) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "Nest: Invalid data received!");
 		m_bDoLogin = true;
 		return;
 	}
-
 	bool bHaveShared = !root["shared"].empty();
 	bool bHaveTopaz = !root["topaz"].empty();
 
@@ -394,7 +464,7 @@ void CNest::GetMeterDetails()
 							}
 						}
 					}
-					
+
 				}
 			}
 			bool bIAlarm = false;
@@ -411,24 +481,28 @@ void CNest::GetMeterDetails()
 				if (!bBool)
 					bIAlarm = true;
 			}
+/*
 			if (!device["component_heat_test_passed"].empty())
 			{
 				bBool = device["component_heat_test_passed"].asBool();
 				if (!bBool)
 					bIAlarm = true;
 			}
+*/
 			if (!device["component_buzzer_test_passed"].empty())
 			{
 				bBool = device["component_buzzer_test_passed"].asBool();
 				if (!bBool)
 					bIAlarm = true;
 			}
+/*
 			if (!device["component_us_test_passed"].empty())
 			{
 				bBool = device["component_us_test_passed"].asBool();
 				if (!bBool)
 					bIAlarm = true;
 			}
+*/
 			if (!device["component_temp_test_passed"].empty())
 			{
 				bBool = device["component_temp_test_passed"].asBool();
@@ -476,28 +550,63 @@ void CNest::GetMeterDetails()
 		return;
 	}
 
-	Json::Value::Members members;
-
 	size_t iThermostat = 0;
-	for (Json::Value::iterator itShared = root["shared"].begin(); itShared != root["shared"].end(); ++itShared)
+	for (Json::Value::iterator ittStructure = root["structure"].begin(); ittStructure != root["structure"].end(); ++ittStructure)
 	{
-		Json::Value nshared = *itShared;
-		if (nshared.isObject())
+		Json::Value nstructure = *ittStructure;
+		if (!nstructure.isObject())
+			continue;
+		std::string StructureID = ittStructure.key().asString();
+		std::string StructureName = nstructure["name"].asString();
+
+		for (Json::Value::iterator ittDevice = nstructure["devices"].begin(); ittDevice != nstructure["devices"].end(); ++ittDevice)
 		{
-			std::string Serial = itShared.key().asString();
-			members = root["structure"].getMemberNames();
-			if (iThermostat>members.size())
+			std::string devID = (*ittDevice).asString();
+			if (devID.find("device.")==std::string::npos)
 				continue;
-			std::string StructureID = *(members.begin()+iThermostat);
-			if (root["structure"][StructureID].empty())
+			std::string Serial = devID.substr(7);
+			if (root["device"].empty())
 				continue;
-			std::string Name = root["structure"][StructureID]["name"].asString();
+			if (root["device"][Serial].empty())
+				continue; //not found !?
+			if (root["shared"][Serial].empty())
+				continue; //Nothing shared?
+
+
+			Json::Value ndevice = root["device"][Serial];
+			if (!ndevice.isObject())
+				continue;
+
+			std::string Name = "Thermostat";
+			if (!ndevice["where_id"].empty())
+			{
+				//Lookup our 'where' (for the Name of the thermostat)
+				std::string where_id = ndevice["where_id"].asString();
+
+				if (!root["where"].empty())
+				{
+					if (!root["where"][StructureID].empty())
+					{
+						for (Json::Value::iterator ittWheres = root["where"][StructureID]["wheres"].begin(); ittWheres != root["where"][StructureID]["wheres"].end(); ++ittWheres)
+						{
+							Json::Value nwheres = *ittWheres;
+							if (nwheres["where_id"] == where_id)
+							{
+								Name = StructureName + " " + nwheres["name"].asString();
+								break;
+							}
+						}
+					}
+				}
+			}
 
 			_tNestThemostat ntherm;
 			ntherm.Serial = Serial;
 			ntherm.StructureID = StructureID;
 			ntherm.Name = Name;
 			m_thermostats[iThermostat] = ntherm;
+
+			Json::Value nshared = root["shared"][Serial];
 
 			//Setpoint
 			if (!nshared["target_temperature"].empty())
@@ -513,12 +622,35 @@ void CNest::GetMeterDetails()
 				SendTempHumSensor((iThermostat * 3) + 2, 255, currentTemp, Humidity, Name + " TempHum");
 			}
 
-			//Away
-			if (!root["structure"][StructureID]["away"].empty())
+			// Check if thermostat is currently Heating
+			if (nshared["can_heat"].asBool() && !nshared["hvac_heater_state"].empty())
 			{
-				bool bIsAway = root["structure"][StructureID]["away"].asBool();
+				bool bIsHeating = nshared["hvac_heater_state"].asBool();
+				UpdateSwitch((unsigned char)(113 + (iThermostat * 3)), bIsHeating, Name + " HeatingOn");
+			}
+
+			// Check if thermostat is currently Cooling
+			if (nshared["can_cool"].asBool() && !nshared["hvac_ac_state"].empty())
+			{
+				bool bIsCooling = nshared["hvac_ac_state"].asBool();
+				UpdateSwitch((unsigned char)(114 + (iThermostat * 3)), bIsCooling, Name + " CoolingOn");
+			}
+
+			//Away
+			if (!nstructure["away"].empty())
+			{
+				bool bIsAway = nstructure["away"].asBool();
 				SendSwitch((iThermostat * 3) + 3, 1, 255, bIsAway, 0, Name + " Away");
 			}
+
+			//Manual Eco mode
+			if (!ndevice["eco"]["mode"].empty())
+			{
+				std::string sCurrentHvacMode = ndevice["eco"]["mode"].asString();
+				bool bIsManualEcoMode = (sCurrentHvacMode == "manual-eco");
+				SendSwitch((iThermostat * 3) + 4, 1, 255, bIsManualEcoMode, 0, Name + " Manual Eco Mode");
+			}
+
 			iThermostat++;
 		}
 	}
@@ -550,9 +682,7 @@ void CNest::SetSetpoint(const int idx, const float temp)
 	unsigned char tSign = m_sql.m_tempsign[0];
 	if (tSign == 'F')
 	{
-		//Maybe this should be done in the main app, so all other devices will also do this
-		//Convert to Celsius
-		tempDest = (tempDest - 32.0f) / 1.8f;
+		tempDest = static_cast<float>(ConvertToCelsius(tempDest));
 	}
 
 	Json::Value root;
@@ -562,7 +692,7 @@ void CNest::SetSetpoint(const int idx, const float temp)
 	std::string sResult;
 
 	std::string sURL = m_TransportURL + NEST_SET_SHARED + m_thermostats[iThermostat].Serial;
-	if (!HTTPClient::POST(sURL, root.toStyledString(), ExtraHeaders, sResult))
+	if (!HTTPClient::POST(sURL, root.toStyledString(), ExtraHeaders, sResult, true, true))
 	{
 		_log.Log(LOG_ERROR, "Nest: Error setting setpoint!");
 		m_bDoLogin = true;
@@ -602,9 +732,54 @@ bool CNest::SetAway(const unsigned char Idx, const bool bIsAway)
 	std::string sResult;
 
 	std::string sURL = m_TransportURL + NEST_SET_STRUCTURE + m_thermostats[iThermostat].StructureID;
-	if (!HTTPClient::POST(sURL, root.toStyledString(), ExtraHeaders, sResult))
+	if (!HTTPClient::POST(sURL, root.toStyledString(), ExtraHeaders, sResult, true, true))
 	{
 		_log.Log(LOG_ERROR, "Nest: Error setting away mode!");
+		m_bDoLogin = true;
+		return false;
+	}
+	return true;
+}
+
+bool CNest::SetManualEcoMode(const unsigned char Idx, const bool bIsManualEcoMode)
+{
+	if (m_UserName.size() == 0)
+		return false;
+	if (m_Password.size() == 0)
+		return false;
+
+	if (m_bDoLogin == true)
+	{
+		if (!Login())
+			return false;
+	}
+
+	size_t iThermostat = (Idx - 4) / 3;
+	if (iThermostat > m_thermostats.size())
+		return false;
+
+	std::vector<std::string> ExtraHeaders;
+
+	ExtraHeaders.push_back("user-agent:Nest/1.1.0.10 CFNetwork/548.0.4");
+	ExtraHeaders.push_back("Authorization:Basic " + m_AccessToken);
+	ExtraHeaders.push_back("X-nl-protocol-version:1");
+
+	Json::Value root;
+	Json::Value eco;
+
+	eco["mode"] = (bIsManualEcoMode ? "manual-eco" : "schedule");
+	root["eco"] = eco;
+
+	std::string sResult;
+
+	// If thermostat information has not yet been read we can't do anything so let's fail.
+	if (m_thermostats[iThermostat].Serial.empty())
+		return false;
+
+	std::string sURL = m_TransportURL + NEST_SET_DEVICE + m_thermostats[iThermostat].Serial;
+	if (!HTTPClient::POST(sURL, root.toStyledString(), ExtraHeaders, sResult, true, true))
+	{
+		_log.Log(LOG_ERROR, "Nest: Error setting manual eco mode!");
 		m_bDoLogin = true;
 		return false;
 	}

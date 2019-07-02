@@ -9,14 +9,16 @@
 #include "../json/json.h"
 #include "../main/RFXtrx.h"
 #include "../main/mainworker.h"
+#include "../main/SQLHelper.h"
 
 #define round(a) ( int ) ( a + .5 )
 
 #ifdef _DEBUG
-	//#define DEBUG_WUNDERGROUND
+	//#define DEBUG_WUNDERGROUNDR
+	//#define DEBUG_WUNDERGROUNDW
 #endif
 
-#ifdef DEBUG_WUNDERGROUND2
+#ifdef DEBUG_WUNDERGROUNDW
 void SaveString2Disk(std::string str, std::string filename)
 {
 	FILE *fOut = fopen(filename.c_str(), "wb+");
@@ -27,7 +29,7 @@ void SaveString2Disk(std::string str, std::string filename)
 	}
 }
 #endif
-#ifdef DEBUG_WUNDERGROUND
+#ifdef DEBUG_WUNDERGROUNDR
 std::string ReadFile(std::string filename)
 {
 	std::ifstream file;
@@ -46,12 +48,13 @@ std::string ReadFile(std::string filename)
 }
 #endif
 
-CWunderground::CWunderground(const int ID, const std::string &APIKey, const std::string &Location)
+CWunderground::CWunderground(const int ID, const std::string &APIKey, const std::string &Location) :
+m_APIKey(APIKey),
+m_Location(Location),
+m_bForceSingleStation(false),
+m_bFirstTime(true)
 {
-	m_HwdID=ID;
-	m_APIKey=APIKey;
-	m_Location=Location;
-	m_stoprequested=false;
+	m_HwdID = ID;
 	Init();
 }
 
@@ -61,13 +64,17 @@ CWunderground::~CWunderground(void)
 
 void CWunderground::Init()
 {
+	m_bFirstTime = true;
 }
 
 bool CWunderground::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CWunderground::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CWunderground::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	if (!m_thread)
 		return false;
 	m_bIsStarted=true;
@@ -77,11 +84,11 @@ bool CWunderground::StartHardware()
 
 bool CWunderground::StopHardware()
 {
-	if (m_thread!=NULL)
+	if (m_thread)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
     return true;
@@ -89,17 +96,19 @@ bool CWunderground::StopHardware()
 
 void CWunderground::Do_Work()
 {
+#ifdef DEBUG_WUNDERGROUNDR
+	GetMeterDetails();
+#endif
 	int sec_counter = 590;
 	_log.Log(LOG_STATUS, "Wunderground: Worker started...");
 
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
 		if (sec_counter % 10 == 0) {
 			m_LastHeartbeat=mytime(NULL);
 		}
-#ifdef DEBUG_WUNDERGROUND
+#ifdef DEBUG_WUNDERGROUNDR
 		if (sec_counter % 10 == 0)
 #else
 		if (sec_counter % 600 == 0)
@@ -120,28 +129,107 @@ std::string CWunderground::GetForecastURL()
 {
 	std::stringstream sURL;
 	std::string szLoc = CURLEncode::URLEncode(m_Location);
+	sURL << "https://api.weather.com/v3/location/point?geocode=" << szLoc << "&language=en-US&format=json&apiKey=" << m_APIKey;
 	sURL << "http://www.wunderground.com/cgi-bin/findweather/getForecast?query=" << szLoc;
 	return sURL.str();
 }
 
+std::string CWunderground::GetWeatherStationFromGeo()
+{
+	std::string sValue;
+	int nValue;
+	if (m_sql.GetPreferencesVar("Location", nValue, sValue))
+	{
+		std::vector<std::string> strarray;
+		StringSplit(sValue, ";", strarray);
+
+		if (strarray.size() == 2)
+		{
+			std::string Latitude = strarray[0];
+			std::string Longitude = strarray[1];
+
+			std::string sResult;
+#ifdef DEBUG_WUNDERGROUNDR
+			sResult = ReadFile("E:\\wu_location.json");
+#else
+			std::stringstream sURL;
+			sURL << "https://api.weather.com/v3/location/near?geocode=" << Latitude << "," << Longitude << "&product=pws&format=json&apiKey=" << m_APIKey;
+			bool bret;
+			std::string szURL = sURL.str();
+			bret = HTTPClient::GET(szURL, sResult);
+			if (!bret)
+			{
+				_log.Log(LOG_ERROR, "Wunderground: Error getting location/near result! (Check API key!)");
+				return "";
+			}
+#ifdef DEBUG_WUNDERGROUNDW
+			SaveString2Disk(sResult, "E:\\wu_location.json");
+#endif
+#endif
+			Json::Value root;
+
+			Json::Reader jReader;
+			bool ret = jReader.parse(sResult, root);
+			if ((!ret) || (!root.isObject()))
+			{
+				_log.Log(LOG_ERROR, "WUnderground: Problem getting location/near result. Invalid data received! (Check Station ID!)");
+				return "";
+			}
+
+			bool bValid = true;
+			if (root["location"].empty() == true)
+			{
+				bValid = false;
+			}
+			else if (root["location"]["stationId"].empty())
+			{
+				bValid = false;
+			}
+			if (!bValid)
+			{
+				_log.Log(LOG_ERROR, "WUnderground: Problem getting location/near result.Invalid data received, or no data returned!");
+				return "";
+			}
+			if (root["location"]["stationId"].size() > 0)
+			{
+				std::string szFirstStation = root["location"]["stationId"][0].asString();
+				return szFirstStation;
+			}
+			else
+				_log.Log(LOG_ERROR, "WUnderground: Problem getting location/near result. No stations returned!");
+		}
+	}
+	return "";
+}
+
 void CWunderground::GetMeterDetails()
 {
+	if (m_Location.find(",") != std::string::npos)
+	{
+		std::string newLocation = GetWeatherStationFromGeo();
+		if (newLocation.empty())
+			return;
+		m_Location = newLocation;
+	}
+	if (m_Location.empty())
+		return;
+
 	std::string sResult;
-#ifdef DEBUG_WUNDERGROUND
+#ifdef DEBUG_WUNDERGROUNDR
 	sResult= ReadFile("E:\\wu.json");
 #else
 	std::stringstream sURL;
 	std::string szLoc = CURLEncode::URLEncode(m_Location);
-	sURL << "http://api.wunderground.com/api/" << m_APIKey << "/conditions/q/" << szLoc << ".json";
+	sURL << "https://api.weather.com/v2/pws/observations/current?stationId=" << szLoc << "&format=json&units=m&apiKey=" << m_APIKey;
 	bool bret;
 	std::string szURL=sURL.str();
 	bret=HTTPClient::GET(szURL,sResult);
 	if (!bret)
 	{
-		_log.Log(LOG_ERROR,"Wunderground: Error getting http data!");
+		_log.Log(LOG_ERROR,"Wunderground: Error getting http data! (Check API key!)");
 		return;
 	}
-#ifdef DEBUG_WUNDERGROUND2
+#ifdef DEBUG_WUNDERGROUNDW
 	SaveString2Disk(sResult, "E:\\wu.json");
 #endif
 #endif
@@ -149,32 +237,22 @@ void CWunderground::GetMeterDetails()
 
 	Json::Reader jReader;
 	bool ret=jReader.parse(sResult,root);
-	if (!ret)
+	if ((!ret) || (!root.isObject()))
 	{
-		_log.Log(LOG_ERROR,"WUnderground: Invalid data received!");
+		_log.Log(LOG_ERROR,"WUnderground: Invalid data received! (Check Station ID!)");
 		return;
 	}
 
 	bool bValid = true;
-	if (root["response"].empty() == true)
+	if (root["observations"].empty() == true)
 	{
 		bValid = false;
 	}
-	else if (!root["response"]["error"].empty())
+	else if (root["observations"][0]["country"].empty())
 	{
 		bValid = false;
-		if (!root["response"]["error"]["description"].empty())
-		{
-			_log.Log(LOG_ERROR, "WUnderground: Error: %s", root["response"]["error"]["description"].asString().c_str());
-			return;
-		}
 	}
-	else if (root["current_observation"].empty()==true)
-	{
-		bValid = false;
-		return;
-	}
-	else if (root["current_observation"]["temp_c"].empty() == true)
+	else if (m_Location.find(root["observations"][0]["stationID"].asString()) == std::string::npos)
 	{
 		bValid = false;
 	}
@@ -183,37 +261,37 @@ void CWunderground::GetMeterDetails()
 		_log.Log(LOG_ERROR, "WUnderground: Invalid data received, or no data returned!");
 		return;
 	}
-	/*
-	std::string tmpstr2 = root.toStyledString();
-	FILE *fOut = fopen("E:\\underground.json", "wb+");
-	fwrite(tmpstr2.c_str(), 1, tmpstr2.size(), fOut);
-	fclose(fOut);
-	*/
+
+	root = root["observations"][0];
+
+	if (!m_bFirstTime)
+	{
+		time_t tlocal = time(NULL);
+		time_t tobserver = (time_t)root["epoch"].asInt();
+		if (difftime(tlocal, tobserver) >= 1800)
+		{
+			//When we don't get any valid data in 30 minutes, we also stop using the values
+			_log.Log(LOG_ERROR, "WUnderground: Receiving old data from WU! (No new data return for more than 30 minutes)");
+			return;
+		}
+	}
+	m_bFirstTime = false;
 
 	std::string tmpstr;
-	int pos;
 	float temp;
 	int humidity=0;
 	int barometric=0;
 	int barometric_forcast=baroForecastNoInfo;
 
+	temp=root["metric"]["temp"].asFloat();
 
-	temp=root["current_observation"]["temp_c"].asFloat();
-
-	if (root["current_observation"]["relative_humidity"].empty()==false)
+	if (root["humidity"].empty()==false)
 	{
-		tmpstr=root["current_observation"]["relative_humidity"].asString();
-		pos=tmpstr.find("%");
-		if (pos==std::string::npos)
-		{
-			_log.Log(LOG_ERROR,"WUnderground: Invalid data received!");
-			return;
-		}
-		humidity=atoi(tmpstr.substr(0,pos).c_str());
+		humidity = root["humidity"].asInt();
 	}
-	if (root["current_observation"]["pressure_mb"].empty()==false)
+	if (root["metric"]["pressure"].empty()==false)
 	{
-		barometric=atoi(root["current_observation"]["pressure_mb"].asString().c_str());
+		barometric=atoi(root["metric"]["pressure"].asString().c_str());
 		if (barometric<1000)
 			barometric_forcast=baroForecastRain;
 		else if (barometric<1020)
@@ -222,110 +300,26 @@ void CWunderground::GetMeterDetails()
 			barometric_forcast=baroForecastPartlyCloudy;
 		else
 			barometric_forcast=baroForecastSunny;
-
-		if (root["current_observation"]["icon"].empty()==false)
-		{
-			std::string forcasticon=root["current_observation"]["icon"].asString();
-			if (forcasticon=="partlycloudy")
-			{
-				barometric_forcast=baroForecastPartlyCloudy;
-			}
-			else if (forcasticon=="cloudy")
-			{
-				barometric_forcast=baroForecastCloudy;
-			}
-			else if (forcasticon=="sunny")
-			{
-				barometric_forcast=baroForecastSunny;
-			}
-			else if (forcasticon=="rain")
-			{
-				barometric_forcast=baroForecastRain;
-			}
-		}
-
 	}
 
 	if (barometric!=0)
 	{
 		//Add temp+hum+baro device
-		RBUF tsen;
-		memset(&tsen,0,sizeof(RBUF));
-		tsen.TEMP_HUM_BARO.packetlength=sizeof(tsen.TEMP_HUM_BARO)-1;
-		tsen.TEMP_HUM_BARO.packettype=pTypeTEMP_HUM_BARO;
-		tsen.TEMP_HUM_BARO.subtype=sTypeTHB1;
-		tsen.TEMP_HUM_BARO.battery_level=9;
-		tsen.TEMP_HUM_BARO.rssi=12;
-		tsen.TEMP_HUM_BARO.id1=0;
-		tsen.TEMP_HUM_BARO.id2=1;
-
-		tsen.TEMP_HUM_BARO.tempsign=(temp>=0)?0:1;
-		int at10=round(abs(temp*10.0f));
-		tsen.TEMP_HUM_BARO.temperatureh=(BYTE)(at10/256);
-		at10-=(tsen.TEMP_HUM_BARO.temperatureh*256);
-		tsen.TEMP_HUM_BARO.temperaturel=(BYTE)(at10);
-		tsen.TEMP_HUM_BARO.humidity=(BYTE)humidity;
-		tsen.TEMP_HUM_BARO.humidity_status=Get_Humidity_Level(tsen.TEMP_HUM.humidity);
-
-		int ab10=round(barometric);
-		tsen.TEMP_HUM_BARO.baroh=(BYTE)(ab10/256);
-		ab10-=(tsen.TEMP_HUM_BARO.baroh*256);
-		tsen.TEMP_HUM_BARO.barol=(BYTE)(ab10);
-		
-		tsen.TEMP_HUM_BARO.forecast=barometric_forcast;
-
-
-		sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP_HUM_BARO, NULL, 255);
+		SendTempHumBaroSensor(1, 255, temp, humidity, static_cast<float>(barometric), barometric_forcast, "THB");
 	}
 	else if (humidity!=0)
 	{
 		//add temp+hum device
-		RBUF tsen;
-		memset(&tsen,0,sizeof(RBUF));
-		tsen.TEMP_HUM.packetlength=sizeof(tsen.TEMP_HUM)-1;
-		tsen.TEMP_HUM.packettype=pTypeTEMP_HUM;
-		tsen.TEMP_HUM.subtype=sTypeTH5;
-		tsen.TEMP_HUM.battery_level=9;
-		tsen.TEMP_HUM.rssi=12;
-		tsen.TEMP_HUM.id1=0;
-		tsen.TEMP_HUM.id2=1;
-
-		tsen.TEMP_HUM.tempsign=(temp>=0)?0:1;
-		int at10=round(abs(temp*10.0f));
-		tsen.TEMP_HUM.temperatureh=(BYTE)(at10/256);
-		at10-=(tsen.TEMP_HUM.temperatureh*256);
-		tsen.TEMP_HUM.temperaturel=(BYTE)(at10);
-		tsen.TEMP_HUM.humidity=(BYTE)humidity;
-		tsen.TEMP_HUM.humidity_status=Get_Humidity_Level(tsen.TEMP_HUM.humidity);
-
-		sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP_HUM, NULL, 255);
+		SendTempHumSensor(1, 255, temp, humidity, "TempHum");
 	}
 	else
 	{
 		//add temp device
-		RBUF tsen;
-		memset(&tsen,0,sizeof(RBUF));
-		tsen.TEMP.packetlength=sizeof(tsen.TEMP)-1;
-		tsen.TEMP.packettype=pTypeTEMP;
-		tsen.TEMP.subtype=sTypeTEMP10;
-		tsen.TEMP.battery_level=9;
-		tsen.TEMP.rssi=12;
-		tsen.TEMP.id1=0;
-		tsen.TEMP.id2=1;
-
-		tsen.TEMP.tempsign=(temp>=0)?0:1;
-		int at10=round(abs(temp*10.0f));
-		tsen.TEMP.temperatureh=(BYTE)(at10/256);
-		at10-=(tsen.TEMP.temperatureh*256);
-		tsen.TEMP.temperaturel=(BYTE)(at10);
-
-		sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP, NULL, 255);
+		SendTempSensor(1, 255, temp, "Temperature");
 	}
 
 	//Wind
 	int wind_degrees=-1;
-	float wind_mph=-1;
-	float wind_gust_mph=-1;
 	float windspeed_ms=0;
 	float windgust_ms=0;
 	float wind_temp=temp;
@@ -333,41 +327,29 @@ void CWunderground::GetMeterDetails()
 	int windgust=1;
 	float windchill=-1;
 
-	if (root["current_observation"]["wind_degrees"].empty()==false)
+	if (root["winddir"].empty()==false)
 	{
-		wind_degrees=atoi(root["current_observation"]["wind_degrees"].asString().c_str());
+		wind_degrees=atoi(root["winddir"].asString().c_str());
 	}
-	if (root["current_observation"]["wind_mph"].empty()==false)
+	if (root["metric"]["windSpeed"].empty()==false)
 	{
-		if ((root["current_observation"]["wind_mph"] != "N/A") && (root["current_observation"]["wind_mph"] != "--"))
+		if ((root["metric"]["windSpeed"] != "N/A") && (root["metric"]["windSpeed"] != "--"))
 		{
-			float temp_wind_mph = static_cast<float>(atof(root["current_observation"]["wind_mph"].asString().c_str()));
-			if (temp_wind_mph!=-9999.00f)
-			{
-				wind_mph=temp_wind_mph;
-				//convert to m/s
-				windspeed_ms=wind_mph*0.44704f;
-			}
+			windspeed_ms = static_cast<float>(atof(root["metric"]["windSpeed"].asString().c_str()));
 		}
 	}
-	if (root["current_observation"]["wind_gust_mph"].empty()==false)
+	if (root["metric"]["windGust"].empty()==false)
 	{
-		if ((root["current_observation"]["wind_gust_mph"] != "N/A") && (root["current_observation"]["wind_gust_mph"] != "--"))
+		if ((root["metric"]["windGust"] != "N/A") && (root["metric"]["windGust"] != "--"))
 		{
-			float temp_wind_gust_mph = static_cast<float>(atof(root["current_observation"]["wind_gust_mph"].asString().c_str()));
-			if (temp_wind_gust_mph!=-9999.00f)
-			{
-				wind_gust_mph=temp_wind_gust_mph;
-				//convert to m/s
-				windgust_ms=wind_gust_mph*0.44704f;
-			}
+			windgust_ms = static_cast<float>(atof(root["metric"]["windGust"].asString().c_str()));
 		}
 	}
-	if (root["current_observation"]["feelslike_c"].empty()==false)
+	if (root["metric"]["windChill"].empty()==false)
 	{
-		if ((root["current_observation"]["feelslike_c"] != "N/A") && (root["current_observation"]["feelslike_c"] != "--"))
+		if ((root["metric"]["windChill"] != "N/A") && (root["metric"]["windChill"] != "--"))
 		{
-			wind_chill = static_cast<float>(atof(root["current_observation"]["feelslike_c"].asString().c_str()));
+			wind_chill = static_cast<float>(atof(root["metric"]["windChill"].asString().c_str()));
 		}
 	}
 	if (wind_degrees!=-1)
@@ -409,13 +391,13 @@ void CWunderground::GetMeterDetails()
 		tsen.WIND.temperaturel=0;
 
 		tsen.WIND.tempsign=(wind_temp>=0)?0:1;
-		int at10=round(abs(wind_temp*10.0f));
+		int at10=round(std::abs(wind_temp*10.0f));
 		tsen.WIND.temperatureh=(BYTE)(at10/256);
 		at10-=(tsen.WIND.temperatureh*256);
 		tsen.WIND.temperaturel=(BYTE)(at10);
 
-		tsen.WIND.chillsign=(wind_temp>=0)?0:1;
-		at10=round(abs(wind_chill*10.0f));
+		tsen.WIND.chillsign=(wind_chill>=0)?0:1;
+		at10=round(std::abs(wind_chill*10.0f));
 		tsen.WIND.chillh=(BYTE)(at10/256);
 		at10-=(tsen.WIND.chillh*256);
 		tsen.WIND.chilll=(BYTE)(at10);
@@ -424,38 +406,24 @@ void CWunderground::GetMeterDetails()
 	}
 
 	//UV
-	if (root["current_observation"].empty() == false)
+	if (root["uv"].empty() == false)
 	{
-		if (root["current_observation"]["UV"].empty() == false)
+		if ((root["uv"] != "N/A") && (root["uv"] != "--"))
 		{
-			if ((root["current_observation"]["UV"] != "N/A") && (root["current_observation"]["UV"] != "--"))
+			float UV = static_cast<float>(atof(root["uv"].asString().c_str()));
+			if ((UV < 16) && (UV >= 0))
 			{
-				float UV = static_cast<float>(atof(root["current_observation"]["UV"].asString().c_str()));
-				if ((UV < 16) && (UV >= 0))
-				{
-					RBUF tsen;
-					memset(&tsen, 0, sizeof(RBUF));
-					tsen.UV.packetlength = sizeof(tsen.UV) - 1;
-					tsen.UV.packettype = pTypeUV;
-					tsen.UV.subtype = sTypeUV1;
-					tsen.UV.battery_level = 9;
-					tsen.UV.rssi = 12;
-					tsen.UV.id1 = 0;
-					tsen.UV.id2 = 1;
-
-					tsen.UV.uv = (BYTE)round(UV * 10);
-					sDecodeRXMessage(this, (const unsigned char *)&tsen.UV, NULL, 255);
-				}
+				SendUVSensor(0, 1, 255, UV, "UV");
 			}
 		}
 	}
 
 	//Rain
-	if (root["current_observation"]["precip_today_metric"].empty() == false)
+	if (root["metric"]["precipTotal"].empty() == false)
 	{
-		if ((root["current_observation"]["precip_today_metric"] != "N/A") && (root["current_observation"]["precip_today_metric"] != "--"))
+		if ((root["metric"]["precipTotal"] != "N/A") && (root["metric"]["precipTotal"] != "--"))
 		{
-			float RainCount = static_cast<float>(atof(root["current_observation"]["precip_today_metric"].asString().c_str()));
+			float RainCount = static_cast<float>(atof(root["metric"]["precipTotal"].asString().c_str()));
 			if ((RainCount != -9999.00f) && (RainCount >= 0.00f))
 			{
 				RBUF tsen;
@@ -471,14 +439,14 @@ void CWunderground::GetMeterDetails()
 				tsen.RAIN.rainrateh = 0;
 				tsen.RAIN.rainratel = 0;
 
-				if (root["current_observation"]["precip_1hr_metric"].empty() == false)
+				if (root["metric"]["precipRate"].empty() == false)
 				{
-					if ((root["current_observation"]["precip_1hr_metric"] != "N/A") && (root["current_observation"]["precip_1hr_metric"] != "--"))
+					if ((root["metric"]["precipRate"] != "N/A") && (root["metric"]["precipRate"] != "--"))
 					{
-						float rainrateph = static_cast<float>(atof(root["current_observation"]["precip_1hr_metric"].asString().c_str()));
+						float rainrateph = static_cast<float>(atof(root["metric"]["precipRate"].asString().c_str()));
 						if (rainrateph != -9999.00f)
 						{
-							int at10 = round(abs(rainrateph*10.0f));
+							int at10 = round(std::abs(rainrateph*100.0f));
 							tsen.RAIN.rainrateh = (BYTE)(at10 / 256);
 							at10 -= (tsen.RAIN.rainrateh * 256);
 							tsen.RAIN.rainratel = (BYTE)(at10);
@@ -497,12 +465,12 @@ void CWunderground::GetMeterDetails()
 		}
 	}
 
-	//Visibility
-	if (root["current_observation"]["visibility_km"].empty() == false)
+	//Visibility (seems not to exist anymore!?)
+	if (root["visibility"].empty() == false)
 	{
-		if ((root["current_observation"]["visibility_km"] != "N/A") && (root["current_observation"]["visibility_km"] != "--"))
+		if ((root["visibility"] != "N/A") && (root["visibility"] != "--"))
 		{
-			float visibility = static_cast<float>(atof(root["current_observation"]["visibility_km"].asString().c_str()));
+			float visibility = static_cast<float>(atof(root["visibility"].asString().c_str()));
 			if (visibility >= 0)
 			{
 				_tGeneralDevice gdevice;
@@ -514,18 +482,15 @@ void CWunderground::GetMeterDetails()
 	}
 
 	//Solar Radiation
-	if (root["current_observation"]["solarradiation"].empty() == false)
+	if (root["solarRadiation"].empty() == false)
 	{
-		if ((root["current_observation"]["solarradiation"] != "N/A") && (root["current_observation"]["solarradiation"] != "--"))
+		float radiation = static_cast<float>(atof(root["solarRadiation"].asString().c_str()));
+		if (radiation >= 0.0f)
 		{
-			float radiation = static_cast<float>(atof(root["current_observation"]["solarradiation"].asString().c_str()));
-			if (radiation >= 0.0f)
-			{
-				_tGeneralDevice gdevice;
-				gdevice.subtype = sTypeSolarRadiation;
-				gdevice.floatval1 = radiation;
-				sDecodeRXMessage(this, (const unsigned char *)&gdevice, NULL, 255);
-			}
+			_tGeneralDevice gdevice;
+			gdevice.subtype = sTypeSolarRadiation;
+			gdevice.floatval1 = radiation;
+			sDecodeRXMessage(this, (const unsigned char *)&gdevice, NULL, 255);
 		}
 	}
 }

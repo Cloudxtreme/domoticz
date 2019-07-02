@@ -21,7 +21,6 @@
 CTE923::CTE923(const int ID)
 {
 	m_HwdID=ID;
-	m_stoprequested=false;
 	Init();
 }
 
@@ -35,28 +34,25 @@ void CTE923::Init()
 
 bool CTE923::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CTE923::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CTE923::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
 
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CTE923::StopHardware()
 {
-	/*
-    m_stoprequested=true;
 	if (m_thread)
-		m_thread->join();
-	return true;
-    */
-	if (m_thread!=NULL)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
 	m_bIsStarted=false;
     return true;
@@ -65,9 +61,8 @@ bool CTE923::StopHardware()
 void CTE923::Do_Work()
 {
 	int sec_counter=TE923_POLL_INTERVAL-4;
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
 
 		if (sec_counter % 12 == 0) {
@@ -101,7 +96,7 @@ void CTE923::GetSensorDetails()
 	{
 		//give it one more change!
 		_te923tool.CloseDevice();
-		boost::this_thread::sleep( boost::posix_time::milliseconds(500) );
+		sleep_milliseconds(500);
 
 		CTE923Tool _te923tool2;
 		if (!_te923tool2.OpenDevice())
@@ -151,122 +146,37 @@ void CTE923::GetSensorDetails()
 	//Add temp sensors
 	for (ii=0; ii<6; ii++)
 	{
+		int BatLevel = 100;
+		if (ii > 0)
+		{
+			if (dev.battery[ii - 1])
+				BatLevel = 100;
+			else
+				BatLevel = 0;
+		}
+
 		if ((data._t[ii]==0)&&(data._h[ii]==0))
 		{
 			//Temp+Hum
-			RBUF tsen;
-			memset(&tsen,0,sizeof(RBUF));
-
 			//special case if baro is present for first sensor
 			if ((ii==0)&&(data._press == 0 ))
 			{
-				tsen.TEMP_HUM_BARO.packetlength=sizeof(tsen.TEMP_HUM_BARO)-1;
-				tsen.TEMP_HUM_BARO.packettype=pTypeTEMP_HUM_BARO;
-				tsen.TEMP_HUM_BARO.subtype=sTypeTHBFloat;
-
-				tsen.TEMP_HUM_BARO.battery_level=9;
-				tsen.TEMP_HUM_BARO.rssi=12;
-				tsen.TEMP_HUM_BARO.id1=0;
-				tsen.TEMP_HUM_BARO.id2=ii;
-
-				tsen.TEMP_HUM_BARO.tempsign=(data.t[ii]>=0)?0:1;
-				int at10=round(abs(data.t[ii]*10.0f));
-				tsen.TEMP_HUM_BARO.temperatureh=(BYTE)(at10/256);
-				at10-=(tsen.TEMP_HUM_BARO.temperatureh*256);
-				tsen.TEMP_HUM_BARO.temperaturel=(BYTE)(at10);
-				tsen.TEMP_HUM_BARO.humidity=(BYTE)data.h[ii];
-				tsen.TEMP_HUM_BARO.humidity_status=Get_Humidity_Level(tsen.TEMP_HUM.humidity);
-
-				int ab10=round(data.press*10.0f);
-				tsen.TEMP_HUM_BARO.baroh=(BYTE)(ab10/256);
-				ab10-=(tsen.TEMP_HUM_BARO.baroh*256);
-				tsen.TEMP_HUM_BARO.barol=(BYTE)(ab10);
-				tsen.TEMP_HUM_BARO.forecast=data.forecast;
-
-				sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP_HUM_BARO, NULL, (dev.battery[ii - 1]) ? 100 : 0);
+				SendTempHumBaroSensorFloat(ii, BatLevel, data.t[ii], data.h[ii], data.press, data.forecast, "THB");
 			}
 			else
 			{
-				tsen.TEMP_HUM.packetlength=sizeof(tsen.TEMP_HUM)-1;
-				tsen.TEMP_HUM.packettype=pTypeTEMP_HUM;
-				tsen.TEMP_HUM.subtype=sTypeTH5;
-				if (dev.battery[ii-1])
-					tsen.TEMP_HUM.battery_level=9;
-				else
-					tsen.TEMP_HUM.battery_level=0;
-				tsen.TEMP_HUM.rssi=12;
-				tsen.TEMP_HUM.id1=0;
-				tsen.TEMP_HUM.id2=ii;
-
-				tsen.TEMP_HUM.tempsign=(data.t[ii]>=0)?0:1;
-				int at10=round(abs(data.t[ii]*10.0f));
-				tsen.TEMP_HUM.temperatureh=(BYTE)(at10/256);
-				at10-=(tsen.TEMP_HUM.temperatureh*256);
-				tsen.TEMP_HUM.temperaturel=(BYTE)(at10);
-				tsen.TEMP_HUM.humidity=(BYTE)data.h[ii];
-				tsen.TEMP_HUM.humidity_status=Get_Humidity_Level(tsen.TEMP_HUM.humidity);
-
-				sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP_HUM, NULL, -1);
+				SendTempHumSensor(ii, BatLevel, data.t[ii], data.h[ii], "TempHum");
 			}
 		}
 		else if (data._t[ii]==0)
 		{
 			//Temp
-			RBUF tsen;
-			memset(&tsen,0,sizeof(RBUF));
-			tsen.TEMP.packetlength=sizeof(tsen.TEMP)-1;
-			tsen.TEMP.packettype=pTypeTEMP;
-			tsen.TEMP.subtype=sTypeTEMP10;
-			if (ii>0)
-			{
-				if (dev.battery[ii-1])
-					tsen.TEMP.battery_level=9;
-				else
-					tsen.TEMP.battery_level=0;
-			}
-			else
-			{
-				tsen.TEMP.battery_level=9;
-			}
-			tsen.TEMP.rssi=12;
-			tsen.TEMP.id1=0;
-			tsen.TEMP.id2=ii;
-
-			tsen.TEMP.tempsign=(data.t[ii]>=0)?0:1;
-			int at10=round(abs(data.t[ii]*10.0f));
-			tsen.TEMP.temperatureh=(BYTE)(at10/256);
-			at10-=(tsen.TEMP.temperatureh*256);
-			tsen.TEMP.temperaturel=(BYTE)(at10);
-
-			sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP, NULL, -1);
+			SendTempSensor(ii, BatLevel, data.t[ii], "Temperature");
 		}
 		else if (data._h[ii]==0)
 		{
 			//Hum
-			RBUF tsen;
-			memset(&tsen,0,sizeof(RBUF));
-			tsen.HUM.packetlength=sizeof(tsen.HUM)-1;
-			tsen.HUM.packettype=pTypeHUM;
-			tsen.HUM.subtype=sTypeHUM2;
-			if (ii>0)
-			{
-				if (dev.battery[ii-1])
-					tsen.HUM.battery_level=9;
-				else
-					tsen.HUM.battery_level=0;
-			}
-			else
-			{
-				tsen.HUM.battery_level=9;
-			}
-			tsen.HUM.rssi=12;
-			tsen.HUM.id1=0;
-			tsen.HUM.id2=ii;
-
-			tsen.HUM.humidity=(BYTE)data.h[ii];
-			tsen.HUM.humidity_status=Get_Humidity_Level(tsen.HUM.humidity);
-
-			sDecodeRXMessage(this, (const unsigned char *)&tsen.HUM, NULL, -1);
+			SendHumiditySensor(ii, BatLevel, data.h[ii], "Humidity");
 		}
 	}
 
@@ -278,6 +188,7 @@ void CTE923::GetSensorDetails()
 		tsen.WIND.packetlength=sizeof(tsen.WIND)-1;
 		tsen.WIND.packettype=pTypeWIND;
 		tsen.WIND.subtype=sTypeWINDNoTemp;
+		dev.batteryWind = 1;
 		if (dev.batteryWind)
 			tsen.WIND.battery_level=9;
 		else
@@ -320,7 +231,7 @@ void CTE923::GetSensorDetails()
 		{
 			tsen.WIND.tempsign=(data.wChill>=0)?0:1;
 			tsen.WIND.chillsign=(data.wChill>=0)?0:1;
-			int at10=round(abs(data.wChill*10.0f));
+			int at10=round(std::abs(data.wChill*10.0f));
 			tsen.WIND.temperatureh=(BYTE)(at10/256);
 			tsen.WIND.chillh=(BYTE)(at10/256);
 			at10-=(tsen.WIND.chillh*256);
@@ -334,6 +245,9 @@ void CTE923::GetSensorDetails()
 	//Rain
 	if (data._RainCount==0)
 	{
+		int BatLevel = (dev.batteryRain) ? 100 : 0;
+		SendRainSensor(1, BatLevel, float(data.RainCount) / 0.7f, "Rain");
+/*
 		RBUF tsen;
 		memset(&tsen,0,sizeof(RBUF));
 		tsen.RAIN.packetlength=sizeof(tsen.RAIN)-1;
@@ -356,27 +270,13 @@ void CTE923::GetSensorDetails()
 		tsen.RAIN.raintotal2=(BYTE)(tr10/256);
 		tr10-=(tsen.RAIN.raintotal2*256);
 		tsen.RAIN.raintotal3=(BYTE)(tr10);
-
 		sDecodeRXMessage(this, (const unsigned char *)&tsen.RAIN, NULL, -1);
+*/
 	}
 	//UV
 	if (data._uv==0)
 	{
-		RBUF tsen;
-		memset(&tsen,0,sizeof(RBUF));
-		tsen.UV.packetlength=sizeof(tsen.UV)-1;
-		tsen.UV.packettype=pTypeUV;
-		tsen.UV.subtype=sTypeUV1;
-		if (dev.batteryUV)
-			tsen.UV.battery_level=9;
-		else
-			tsen.UV.battery_level=0;
-		tsen.UV.rssi=12;
-		tsen.UV.id1=0;
-		tsen.UV.id2=1;
-
-		tsen.UV.uv=(BYTE)round(data.uv*10);
-		sDecodeRXMessage(this, (const unsigned char *)&tsen.UV, NULL, -1);
+		SendUVSensor(0, 1, 255, data.uv, "UV");
 	}
 }
 #endif //WITH_LIBUSB

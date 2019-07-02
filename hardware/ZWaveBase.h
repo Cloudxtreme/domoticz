@@ -1,6 +1,5 @@
 #pragma once
 
-#include <map>
 #include <time.h>
 #include "DomoticzHardware.h"
 
@@ -13,7 +12,7 @@ class ZWaveBase : public CDomoticzHardwareBase
 	{
 		ZDTYPE_SWITCH_NORMAL = 0,
 		ZDTYPE_SWITCH_DIMMER,
-		ZDTYPE_SWITCH_FGRGBWM441,
+		ZDTYPE_SWITCH_RGBW,
 		ZDTYPE_SWITCH_COLOR,
 
 		ZDTYPE_SENSOR_TEMPERATURE,
@@ -38,7 +37,14 @@ class ZWaveBase : public CDomoticzHardwareBase
 		ZDTYPE_SENSOR_DEWPOINT,
 		ZDTYPE_SENSOR_CO2,
 		ZDTYPE_SENSOR_UV,
-		ZDTYPE_SENSOR_WATER
+		ZDTYPE_SENSOR_WATER,
+		ZDTYPE_SENSOR_MOISTURE,
+		ZDTYPE_SENSOR_TANK_CAPACITY,
+
+		ZDTYPE_ALARM,
+		ZDTYPE_CENTRAL_SCENE,
+
+		ZDTYPE_SENSOR_CUSTOM,
 	};
 	struct _tZWaveDevice
 	{
@@ -78,9 +84,12 @@ class ZWaveBase : public CDomoticzHardwareBase
 
 		//label
 		std::string label;
+		std::string custom_label;
 
 		time_t lastreceived;
 		unsigned char sequence_number;
+
+		int Alarm_Type;
 
 		_tZWaveDevice() :
 			label("Unknown")
@@ -95,7 +104,7 @@ class ZWaveBase : public CDomoticzHardwareBase
 			isFLiRS=false;
 			hasWakeup=false;
 			hasBattery=false;
-			batValue = 0;
+			batValue = 255;
 			floatValue=0;
 			intvalue=0;
 			bValidValue=true;
@@ -112,6 +121,7 @@ class ZWaveBase : public CDomoticzHardwareBase
 			Product_id = -1;
 			Product_type = -1;
 			lastreceived = 0;
+			Alarm_Type = -1;
 		}
 	};
 public:
@@ -120,20 +130,20 @@ public:
 
 	virtual bool GetInitialDevices()=0;
 	virtual bool GetUpdates()=0;
-	bool StartHardware();
-	bool StopHardware();
-	bool WriteToHardware(const char *pdata, const unsigned char length);
+	bool StartHardware() override;
+	bool StopHardware() override;
+	bool WriteToHardware(const char *pdata, const unsigned char length) override;
 public:
 	int m_LastIncludedNode;
 	std::string m_LastIncludedNodeType;
 	bool m_bHaveLastIncludedNodeInfo;
 	int m_LastRemovedNode;
-	boost::mutex m_NotificationMutex;
+	std::mutex m_NotificationMutex;
 private:
 	void Do_Work();
 	void SendDevice2Domoticz(const _tZWaveDevice *pDevice);
 	void SendSwitchIfNotExists(const _tZWaveDevice *pDevice);
-	
+
 	_tZWaveDevice* FindDevice(const int nodeID, const int instanceID, const int indexID);
 	_tZWaveDevice* FindDevice(const int nodeID, const int instanceID, const int indexID, const _eZWaveDeviceType devType);
 	_tZWaveDevice* FindDevice(const int nodeID, const int instanceID, const int indexID, const int CommandClassID, const _eZWaveDeviceType devType);
@@ -152,7 +162,6 @@ private:
 	virtual void SetClock(const int nodeID, const int instanceID, const int commandClass, const int day, const int hour, const int minute)=0;
 	virtual void SetThermostatMode(const int nodeID, const int instanceID, const int commandClass, const int tMode) = 0;
 	virtual void SetThermostatFanMode(const int nodeID, const int instanceID, const int commandClass, const int fMode) = 0;
-	virtual std::string GetSupportedThermostatModes(const unsigned long ID) = 0;
 	virtual std::string GetSupportedThermostatFanModes(const unsigned long ID) = 0;
 	virtual void StopHardwareIntern() = 0;
 	virtual bool IncludeDevice(const bool bSecure) = 0;
@@ -169,8 +178,7 @@ private:
 	time_t m_updateTime;
 	bool m_bInitState;
 	std::map<std::string,_tZWaveDevice> m_devices;
-	boost::shared_ptr<boost::thread> m_thread;
-	bool m_stoprequested;
+	std::shared_ptr<std::thread> m_thread;
 };
 
 

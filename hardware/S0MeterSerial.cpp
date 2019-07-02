@@ -5,12 +5,13 @@
 #include "../main/RFXtrx.h"
 #include "P1MeterBase.h"
 #include "hardwaretypes.h"
-#include <string>
-#include <algorithm>
-#include <iostream>
-#include <boost/bind.hpp>
 
+#include <algorithm>
 #include <ctime>
+#include <boost/bind.hpp>
+#include <boost/exception/diagnostic_information.hpp>
+#include <iostream>
+#include <string>
 
 #ifdef _DEBUG
 	//#define DEBUG_S0
@@ -25,48 +26,23 @@
 	};
 #endif
 
-S0MeterSerial::S0MeterSerial(const int ID, const std::string& devname, const unsigned int baud_rate, const std::string& Settings)
+S0MeterSerial::S0MeterSerial(const int ID, const std::string& devname, const unsigned int baud_rate)
 {
 	m_HwdID=ID;
 	m_szSerialPort=devname;
 	m_iBaudRate=baud_rate;
-
-	m_meters[0].m_type=0;
-	m_meters[1].m_type=0;
-	m_meters[2].m_type=0;
-	m_meters[3].m_type=0;
-	m_meters[4].m_type=0;
-	m_meters[0].m_pulse_per_unit=1000.0;
-	m_meters[1].m_pulse_per_unit=1000.0;
-	m_meters[2].m_pulse_per_unit=1000.0;
-	m_meters[3].m_pulse_per_unit=1000.0;
-	m_meters[4].m_pulse_per_unit=1000.0;
-
-	std::vector<std::string> splitresults;
-	StringSplit(Settings, ";", splitresults);
-	if (splitresults.size() == 10)
-	{
-		m_meters[0].m_type = atoi(splitresults[0].c_str());
-		m_meters[0].m_pulse_per_unit = atof(splitresults[1].c_str());
-		m_meters[1].m_type = atoi(splitresults[2].c_str());
-		m_meters[1].m_pulse_per_unit = atof(splitresults[3].c_str());
-		m_meters[2].m_type = atoi(splitresults[4].c_str());
-		m_meters[2].m_pulse_per_unit = atof(splitresults[5].c_str());
-		m_meters[3].m_type = atoi(splitresults[6].c_str());
-		m_meters[3].m_pulse_per_unit = atof(splitresults[7].c_str());
-		m_meters[4].m_type = atoi(splitresults[8].c_str());
-		m_meters[4].m_pulse_per_unit = atof(splitresults[9].c_str());
-	}
+	InitBase();
 }
 
 S0MeterSerial::~S0MeterSerial()
 {
-	clearReadCallback();
+
 }
 
 bool S0MeterSerial::StartHardware()
 {
-	StartHeartbeatThread();
+	RequestStart();
+
 	//Try to open the Serial Port
 	try
 	{
@@ -127,33 +103,25 @@ bool S0MeterSerial::StartHardware()
 	}
 #endif
 
+	StartHeartbeatThread();
+
+	_log.Log(LOG_STATUS, "S0 Meter: Worker started...");
+
 	return true;
 }
 
 bool S0MeterSerial::StopHardware()
 {
+	terminate();
 	m_bIsStarted=false;
-	if (isOpen())
-	{
-		try {
-			clearReadCallback();
-			close();
-			doClose();
-			setErrorStatus(true);
-		} catch(...)
-		{
-			//Don't throw from a Stop command
-		}
-	}
 	StopHeartbeatThread();
-	_log.Log(LOG_STATUS, "S0 Meter: Serial Worker stopped...");
+	_log.Log(LOG_STATUS, "S0 Meter: Worker stopped...");
 	return true;
 }
 
 
 void S0MeterSerial::readCallback(const char *data, size_t len)
 {
-	boost::lock_guard<boost::mutex> l(readQueueMutex);
 	if (!m_bIsStarted)
 		return;
 

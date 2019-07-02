@@ -3,9 +3,9 @@
 #ifdef WIN32
 #include "1WireForWindows.h"
 #include "../../main/Logger.h"
-#include <boost/thread.hpp>
 #include <boost/optional.hpp>
-
+#include "../json/json.h"
+#include <WS2tcpip.h>
 
 #define _1WIRE_SERVICE_PORT "1664"
 
@@ -92,7 +92,7 @@ void DisconnectFromService(SOCKET theSocket)
    closesocket(theSocket);
 }
 
-bool Send(SOCKET theSocket,std::string requestToSend)
+bool Send(SOCKET theSocket, const std::string &requestToSend)
 {
    // Send message size
    size_t requestSize = requestToSend.length();
@@ -124,7 +124,7 @@ std::string Receive(SOCKET theSocket)
    return answer;
 }
 
-std::string SendAndReceive(SOCKET theSocket,std::string requestToSend)
+std::string SendAndReceive(SOCKET theSocket,const std::string &requestToSend)
 {
    if (!Send(theSocket,requestToSend))
       return "";
@@ -132,26 +132,27 @@ std::string SendAndReceive(SOCKET theSocket,std::string requestToSend)
    return Receive(theSocket);
 }
 
-std::string C1WireForWindows::SendAndReceive(std::string requestToSend) const
+std::string C1WireForWindows::SendAndReceive(const std::string &requestToSend) const
 {
    // SendAndReceive can be called by 2 different thread contexts : writeData and GetDevices
    // So we have to set protection
-   boost::lock_guard<boost::mutex> locker(*(const_cast<boost::mutex*>(&m_SocketMutex)));
+   std::lock_guard<std::mutex> locker(*(const_cast<std::mutex*>(&m_SocketMutex)));
 
    return ::SendAndReceive(m_Socket,requestToSend);
 }
 
+//Giz: To Author, please rewrite to use this without boost!
 bool C1WireForWindows::IsAvailable()
 {
 #ifdef _DEBUG
 	return false;
-#endif
+#else
    static boost::optional<bool> IsAvailable;
 
    if (IsAvailable.is_initialized())
       return IsAvailable.get();
 
-   // Make a connection only to know if 1-wire is avalaible
+   // Make a connection only to know if 1-wire is available
    SOCKET theSocket = ConnectToService();
    if (theSocket == INVALID_SOCKET)
    {
@@ -188,12 +189,14 @@ bool C1WireForWindows::IsAvailable()
 
    IsAvailable=ansRoot.get("Available",false).asBool();
    return IsAvailable.get();
+#endif
 }
 
 C1WireForWindows::C1WireForWindows()
 {
    // Connect to service
    m_Socket = ConnectToService();
+   _log.Log(LOG_STATUS,"Using 1-Wire support (Windows)...");
 }
 
 C1WireForWindows::~C1WireForWindows()
@@ -201,7 +204,7 @@ C1WireForWindows::~C1WireForWindows()
    // Disconnect from service
    if (m_Socket==INVALID_SOCKET)
       return;
-      
+
    DisconnectFromService(m_Socket);
 }
 
@@ -226,11 +229,10 @@ void C1WireForWindows::GetDevices(/*out*/std::vector<_t1WireDevice>& devices) co
 
    if (!ansRoot["InvalidRequest"].isNull())
    {
-      Log(LOG_ERROR,"1-wire GetDevices : get an InvalidRequest answer with reason \"%s\"\n",
-         ansRoot.get("Reason","unknown reason").asString());
+      Log(LOG_ERROR,"1-wire GetDevices : get an InvalidRequest answer with reason \"%s\"\n", ansRoot.get("Reason","unknown reason").asString().c_str());
       return;
    }
-   
+
    for ( Json::ArrayIndex itDevice = 0; itDevice<ansRoot["Devices"].size(); itDevice++)
    {
       _t1WireDevice device;
@@ -393,7 +395,7 @@ int C1WireForWindows::GetVoltage(const _t1WireDevice& device,int unit) const
    return ansRoot.get("Voltage",0).asInt();
 }
 
-float C1WireForWindows::GetIlluminescence(const _t1WireDevice& device) const
+float C1WireForWindows::GetIlluminance(const _t1WireDevice& device) const
 {
    Json::Value ansRoot;
    try
@@ -407,7 +409,29 @@ float C1WireForWindows::GetIlluminescence(const _t1WireDevice& device) const
    return ansRoot.get("Illuminescence",0.0f).asFloat();
 }
 
-void C1WireForWindows::SetLightState(const std::string& sId,int unit,bool value)
+int C1WireForWindows::GetWiper(const _t1WireDevice& device) const
+{
+	Json::Value ansRoot;
+	try
+	{
+		ansRoot = readData(device);
+	}
+	catch (C1WireForWindowsReadException&)
+	{
+		return -1;
+	}
+	return ansRoot.get("Wiper", -1).asUInt();
+}
+
+void C1WireForWindows::StartSimultaneousTemperatureRead()
+{
+}
+
+void C1WireForWindows::PrepareDevices()
+{
+}
+
+void C1WireForWindows::SetLightState(const std::string& sId,int unit,bool value, const unsigned int)
 {
    if (m_Socket==INVALID_SOCKET)
       return;

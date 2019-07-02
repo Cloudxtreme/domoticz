@@ -80,13 +80,18 @@ struct _t1WireDevice
    _e1WireFamilyType family;
    std::string devid;
    std::string filename;
+
+   bool operator<(_t1WireDevice other) const
+   {
+	   return devid > other.devid;
+   }
 };
 
 _e1WireFamilyType ToFamily(const std::string& str);
 
 
 #define DEVICE_ID_SIZE  6
-void DeviceIdToByteArray(std::string deviceId,/*out*/unsigned char* byteArray);
+void DeviceIdToByteArray(const std::string &deviceId,/*out*/unsigned char* byteArray);
 std::string ByteArrayToDeviceId(const unsigned char* byteArray);
 
 unsigned char Crc16(const unsigned char* byteArray,size_t arraySize);

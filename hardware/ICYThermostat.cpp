@@ -4,7 +4,6 @@
 #include "../main/Logger.h"
 #include "hardwaretypes.h"
 #include "../main/localtime_r.h"
-#include "../json/json.h"
 #include "../main/RFXtrx.h"
 #include "../main/SQLHelper.h"
 #include "../httpclient/HTTPClient.h"
@@ -30,7 +29,6 @@ m_UserName(Username),
 m_Password(Password)
 {
 	m_HwdID=ID;
-	m_stoprequested=false;
 	m_companymode = CMODE_UNKNOWN;
 	Init();
 }
@@ -47,21 +45,24 @@ void CICYThermostat::Init()
 
 bool CICYThermostat::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CICYThermostat::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CICYThermostat::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CICYThermostat::StopHardware()
 {
-	if (m_thread!=NULL)
+	if (m_thread)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
     return true;
@@ -73,11 +74,9 @@ void CICYThermostat::Do_Work()
 {
 	int sec_counter = ICY_POLL_INTERVAL-5;
 	_log.Log(LOG_STATUS,"ICYThermostat: Worker started...");
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
-
 		if (sec_counter % 12 == 0)
 		{
 			m_LastHeartbeat = mytime(NULL);
@@ -90,31 +89,9 @@ void CICYThermostat::Do_Work()
 	_log.Log(LOG_STATUS,"ICYThermostat: Worker stopped...");
 }
 
-bool CICYThermostat::WriteToHardware(const char *pdata, const unsigned char length)
+bool CICYThermostat::WriteToHardware(const char* /*pdata*/, const unsigned char /*length*/)
 {
 	return false;
-}
-
-void CICYThermostat::SendTempSensor(const unsigned char Idx, const float Temp, const std::string &defaultname)
-{
-	RBUF tsen;
-	memset(&tsen,0,sizeof(RBUF));
-
-	tsen.TEMP.packetlength=sizeof(tsen.TEMP)-1;
-	tsen.TEMP.packettype=pTypeTEMP;
-	tsen.TEMP.subtype=sTypeTEMP10;
-	tsen.TEMP.battery_level=9;
-	tsen.TEMP.rssi=12;
-	tsen.TEMP.id1=0;
-	tsen.TEMP.id2=Idx;
-
-	tsen.TEMP.tempsign=(Temp>=0)?0:1;
-	int at10=round(abs(Temp*10.0f));
-	tsen.TEMP.temperatureh=(BYTE)(at10/256);
-	at10-=(tsen.TEMP.temperatureh*256);
-	tsen.TEMP.temperaturel=(BYTE)(at10);
-
-	sDecodeRXMessage(this, (const unsigned char *)&tsen.TEMP, defaultname.c_str(), 255);
 }
 
 void CICYThermostat::SendSetPointSensor(const unsigned char Idx, const float Temp, const std::string &defaultname)
@@ -201,7 +178,7 @@ bool CICYThermostat::GetSerialAndToken()
 
 	Json::Reader jReader;
 	bool ret = jReader.parse(sResult, root);
-	if (!ret)
+	if ((!ret) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "ICYThermostat: Invalid data received, or invalid username/password!");
 		return false;
@@ -267,7 +244,7 @@ void CICYThermostat::GetMeterDetails()
 
 	Json::Reader jReader;
 	bool ret = jReader.parse(sResult, root);
-	if (!ret)
+	if ((!ret) || (!root.isObject()))
 	{
 		_log.Log(LOG_ERROR, "ICYThermostat: Invalid data received!");
 		return;
@@ -283,7 +260,7 @@ void CICYThermostat::GetMeterDetails()
 		_log.Log(LOG_ERROR, "ICYThermostat: Invalid data received!");
 		return;
 	}
-	SendTempSensor(1, root["temperature2"].asFloat(), "Room Temperature");
+	SendTempSensor(1, 255, root["temperature2"].asFloat(), "Room Temperature");
 }
 
 void CICYThermostat::SetSetpoint(const int idx, const float temp)
@@ -316,7 +293,7 @@ void CICYThermostat::SetSetpoint(const int idx, const float temp)
 			_log.Log(LOG_ERROR,"ICYThermostat: Error setting SetPoint temperature!");
 		}
 		else {
-			_log.Log(LOG_STATUS,"ICYThermostat: Setting Room SetPoint to: %.1f",temp);
+			_log.Debug(DEBUG_HARDWARE, "ICYThermostat: Setting Room SetPoint to: %.1f", temp);
 		}
 	}
 }

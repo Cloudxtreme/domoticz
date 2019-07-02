@@ -34,7 +34,7 @@ typedef enum {
 	REGO_TYPE_END
 } RegoRegType;
 
-typedef struct _tRegoRegisters 
+typedef struct _tRegoRegisters
 {
 	char name[25];
 	unsigned short regNum_type1;
@@ -70,7 +70,7 @@ typedef union _tRegoReply
     } data;
 } RegoReply;
 
-RegoRegisters g_allRegisters[] = {  
+RegoRegisters g_allRegisters[] = {
 	{ "GT1 Radiator",           0x0209,	0x020B,	0x020D,	REGO_TYPE_TEMP,         -50.0, -1, 0 },
 	{ "GT2 Out",		        0x020A,	0x020C,	0x020E,	REGO_TYPE_TEMP,         -50.0, -1, 0 },
 	{ "GT3 Hot water",	        0x020B,	0x020D,	0x020F,	REGO_TYPE_TEMP,         -50.0, -1, 0 },
@@ -103,14 +103,13 @@ RegoRegisters g_allRegisters[] = {
 //
 //Class Rego6XXSerial
 //
-CRego6XXSerial::CRego6XXSerial(const int ID, const std::string& devname, const int type)
+CRego6XXSerial::CRego6XXSerial(const int ID, const std::string& devname, const int type) :
+m_szSerialPort(devname)
 {
 	m_HwdID=ID;
-	m_szSerialPort=devname;
     m_regoType = type;
     m_errorcntr = 0;
 
-	m_stoprequested=false;
 	m_retrycntr = 0;
 	m_pollcntr = 0;
 	m_pollDelaycntr = 0;
@@ -134,34 +133,24 @@ CRego6XXSerial::~CRego6XXSerial()
 
 bool CRego6XXSerial::StartHardware()
 {
+	RequestStart();
+
 	m_retrycntr=Rego6XX_RETRY_DELAY; //will force reconnect first thing
 
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CRego6XXSerial::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CRego6XXSerial::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CRego6XXSerial::StopHardware()
 {
-	if (m_thread != NULL)
+	if (m_thread)
 	{
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
-	}
-    // Wait a while. The read thread might be reading. Adding this prevents a pointer error in the async serial class.
-    sleep_milliseconds(10);
-	if (isOpen())
-	{
-		try {
-			clearReadCallback();
-			close();
-			doClose();
-			setErrorStatus(true);
-		} catch(...)
-		{
-			//Don't throw from a Stop command
-		}
+		m_thread.reset();
 	}
 	m_bIsStarted=false;
 	return true;
@@ -171,12 +160,8 @@ bool CRego6XXSerial::StopHardware()
 void CRego6XXSerial::Do_Work()
 {
 	int sec_counter = 0;
-	while (!m_stoprequested)
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
-		if (m_stoprequested)
-			break;
-
 		sec_counter++;
 
 		if (sec_counter % 12 == 0) {
@@ -203,15 +188,7 @@ void CRego6XXSerial::Do_Work()
 		else if(m_errorcntr > Rego6XX_MAX_ERRORS_UNITL_RESTART)
         {
             // Reopen the port and clear the error counter.
-		    try {
-			    clearReadCallback();
-			    close();
-			    doClose();
-			    setErrorStatus(true);
-		    } catch(...)
-		    {
-			    //Don't throw from a Stop command
-		    }
+			terminate();
 
 		    _log.Log(LOG_ERROR,"Rego6XX: Reopening serial port");
 		    sleep_seconds(2);
@@ -299,8 +276,10 @@ void CRego6XXSerial::Do_Work()
 			}
 		}
 	}
-	_log.Log(LOG_STATUS,"Rego6XX: Serial Worker stopped...");
-} 
+	terminate();
+
+	_log.Log(LOG_STATUS,"Rego6XX: Worker stopped...");
+}
 
 
 bool CRego6XXSerial::OpenSerialDevice()
@@ -334,8 +313,6 @@ bool CRego6XXSerial::OpenSerialDevice()
 
 void CRego6XXSerial::readCallback(const char *data, size_t len)
 {
-	boost::lock_guard<boost::mutex> l(readQueueMutex);
-
 	if (!m_bEnableReceive)
 		return; //receiving not enabled
 
@@ -384,9 +361,9 @@ bool CRego6XXSerial::ParseData()
 		if(m_readBuffer[tail] == 0x01)
 		{
 			// Check crc
-			if(m_readBuffer[(tail + 4) & Rego6XX_READ_BUFFER_MASK] == 
-				(m_readBuffer[(tail + 1) & Rego6XX_READ_BUFFER_MASK] ^ 
-				 m_readBuffer[(tail + 2) & Rego6XX_READ_BUFFER_MASK] ^ 
+			if(m_readBuffer[(tail + 4) & Rego6XX_READ_BUFFER_MASK] ==
+				(m_readBuffer[(tail + 1) & Rego6XX_READ_BUFFER_MASK] ^
+				 m_readBuffer[(tail + 2) & Rego6XX_READ_BUFFER_MASK] ^
 				 m_readBuffer[(tail + 3) & Rego6XX_READ_BUFFER_MASK]))
 			{
 				// This is a proper message
@@ -394,7 +371,7 @@ bool CRego6XXSerial::ParseData()
 		        time_t atime=mytime(NULL);
                 signed short data = 0;
 				data = (m_readBuffer[(tail + 1) & Rego6XX_READ_BUFFER_MASK] << 14) |
-					   (m_readBuffer[(tail + 2) & Rego6XX_READ_BUFFER_MASK] << 7) | 
+					   (m_readBuffer[(tail + 2) & Rego6XX_READ_BUFFER_MASK] << 7) |
 						m_readBuffer[(tail + 3) & Rego6XX_READ_BUFFER_MASK];
 
 				if(g_allRegisters[m_pollcntr].type == REGO_TYPE_TEMP)
@@ -403,7 +380,7 @@ bool CRego6XXSerial::ParseData()
 					m_Rego6XXTemp.temperature =  (float)(data * 0.1);
                     if((m_Rego6XXTemp.temperature >= -48.2) && // -48.3 means no sensor.
                         ((fabs(m_Rego6XXTemp.temperature - g_allRegisters[m_pollcntr].lastTemp) > 0.09) || // Only send changes.
-                         (atime - g_allRegisters[m_pollcntr].lastSent >= 300))) // Send at least every 5 minutes
+			 (difftime(atime,g_allRegisters[m_pollcntr].lastSent) >= 300))) // Send at least every 5 minutes
                     {
                         g_allRegisters[m_pollcntr].lastSent = atime;
                         g_allRegisters[m_pollcntr].lastTemp = m_Rego6XXTemp.temperature;
@@ -413,10 +390,10 @@ bool CRego6XXSerial::ParseData()
 				else if(g_allRegisters[m_pollcntr].type == REGO_TYPE_STATUS)
 				{
         			strcpy(m_Rego6XXValue.ID, g_allRegisters[m_pollcntr].name);
-					m_Rego6XXValue.value = data; 
+					m_Rego6XXValue.value = data;
                 	m_Rego6XXValue.subtype=sTypeRego6XXStatus;
                     if((m_Rego6XXValue.value != g_allRegisters[m_pollcntr].lastValue) || // Only send changes.
-                       (atime - g_allRegisters[m_pollcntr].lastSent >= (3600 * 23))) // Send at least every 23 hours
+			(difftime(atime,g_allRegisters[m_pollcntr].lastSent) >= (3600 * 23))) // Send at least every 23 hours
                     {
                         g_allRegisters[m_pollcntr].lastSent = atime;
                         g_allRegisters[m_pollcntr].lastValue = m_Rego6XXValue.value;
@@ -426,10 +403,10 @@ bool CRego6XXSerial::ParseData()
 				else if(g_allRegisters[m_pollcntr].type == REGO_TYPE_COUNTER)
 				{
         			strcpy(m_Rego6XXValue.ID, g_allRegisters[m_pollcntr].name);
-					m_Rego6XXValue.value = data; 
+					m_Rego6XXValue.value = data;
                 	m_Rego6XXValue.subtype=sTypeRego6XXCounter;
                     if((m_Rego6XXValue.value != g_allRegisters[m_pollcntr].lastValue) || // Only send changes.
-                       (atime - g_allRegisters[m_pollcntr].lastSent >= 3000)) // Send at least every 50 minutes
+			(difftime(atime,g_allRegisters[m_pollcntr].lastSent) >= 3000)) // Send at least every 50 minutes
                     {
                         g_allRegisters[m_pollcntr].lastSent = atime;
                         g_allRegisters[m_pollcntr].lastValue = m_Rego6XXValue.value;
@@ -458,23 +435,23 @@ bool CRego6XXSerial::ParseData()
 //Webserver helpers
 namespace http {
 	namespace server {
-		char * CWebServer::SetRego6XXType(WebEmSession & session, const request& req)
+		void CWebServer::SetRego6XXType(WebEmSession & session, const request& req, std::string & redirect_uri)
 		{
-			m_retstr = "/index.html";
+			redirect_uri = "/index.html";
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return (char*)m_retstr.c_str();
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string idx = request::findValue(&req, "idx");
 			if (idx == "") {
-				return (char*)m_retstr.c_str();
+				return;
 			}
 			std::vector<std::vector<std::string> > result;
 			result = m_sql.safe_query("SELECT Mode1, Mode2, Mode3, Mode4, Mode5, Mode6 FROM Hardware WHERE (ID='%q')", idx.c_str());
-			if (result.size() < 1)
-				return (char*)m_retstr.c_str();
+			if (result.empty())
+				return;
 
 			unsigned char currentMode1 = atoi(result[0][0].c_str());
 
@@ -485,8 +462,6 @@ namespace http {
 			{
 				m_sql.UpdateRFXCOMHardwareDetails(atoi(idx.c_str()), newMode1, 0, 0, 0, 0, 0);
 			}
-
-			return (char*)m_retstr.c_str();
 		}
 	}
 }

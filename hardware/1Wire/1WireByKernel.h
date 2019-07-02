@@ -1,7 +1,10 @@
 #pragma once
 #include "1WireSystem.h"
+#include <condition_variable>
+#include <list>
+#include "../../main/StoppableTask.h"
 
-class C1WireByKernel : public I_1WireSystem
+class C1WireByKernel : public I_1WireSystem, StoppableTask
 {
 public:
    C1WireByKernel();
@@ -9,7 +12,7 @@ public:
 
    // I_1WireSystem implementation
    virtual void GetDevices(/*out*/std::vector<_t1WireDevice>& devices) const;
-   virtual void SetLightState(const std::string& sId,int unit,bool value);
+   virtual void SetLightState(const std::string& sId,int unit,bool value, const unsigned int level);
    virtual float GetTemperature(const _t1WireDevice& device) const;
    virtual float GetHumidity(const _t1WireDevice& device) const;
    virtual float GetPressure(const _t1WireDevice& device) const;
@@ -17,7 +20,10 @@ public:
    virtual unsigned int GetNbChannels(const _t1WireDevice& device) const;
    virtual unsigned long GetCounter(const _t1WireDevice& device,int unit) const;
    virtual int GetVoltage(const _t1WireDevice& device,int unit) const;
-   virtual float GetIlluminescence(const _t1WireDevice& device) const;
+   virtual float GetIlluminance(const _t1WireDevice& device) const;
+   virtual int GetWiper(const _t1WireDevice& device) const;
+   virtual void StartSimultaneousTemperatureRead();
+   virtual void PrepareDevices();
    // END : I_1WireSystem implementation
 
    static bool IsAvailable();
@@ -26,10 +32,10 @@ protected:
    void GetDevice(const std::string& deviceName, /*out*/_t1WireDevice& device) const;
 
    bool sendAndReceiveByRwFile(std::string path,const unsigned char * const cmd,size_t cmdSize,unsigned char * const answer,size_t answerSize) const;
-
+   void ReadStates();
 
    // Thread management
-   boost::thread* m_Thread;
+   std::shared_ptr<std::thread> m_thread;
    void ThreadFunction();
    void ThreadProcessPendingChanges();
    void ThreadBuildDevicesList();
@@ -39,13 +45,13 @@ protected:
 
    void ThreadWriteRawDataDualChannelAddressableSwitch(const std::string& deviceFileName,int unit,bool value) const;
    void ThreadWriteRawData8ChannelAddressableSwitch(const std::string& deviceFileName,int unit,bool value) const;
-
+private:
    // Devices
    #define MAX_DIGITAL_IO  8
    class DeviceState
    {
    public:
-      DeviceState(_t1WireDevice device) : m_Device(device) {}
+	   explicit DeviceState(const _t1WireDevice &device) : m_Device(device) {}
       _t1WireDevice GetDevice() const {return m_Device;}
       union
       {
@@ -57,14 +63,12 @@ protected:
       _t1WireDevice m_Device;
    };
 
-   bool m_AllDevicesInitialized;
-
    // Thread-shared data and lock methods
-   boost::mutex m_Mutex;
-   class Locker:boost::lock_guard<boost::mutex>
+   std::mutex m_Mutex;
+   class Locker:std::lock_guard<std::mutex>
    {
    public:
-      Locker(const boost::mutex& mutex):boost::lock_guard<boost::mutex>(*(const_cast<boost::mutex*>(&mutex))){}
+	   explicit Locker(const std::mutex& mutex):std::lock_guard<std::mutex>(*(const_cast<std::mutex*>(&mutex))){}
       virtual ~Locker(){}
    };
    typedef std::map<std::string,DeviceState*> DeviceCollection;
@@ -73,14 +77,14 @@ protected:
    // Pending changes queue
    std::list<DeviceState> m_PendingChanges;
    const DeviceState* GetDevicePendingState(const std::string& deviceId) const;
-   boost::mutex m_PendingChangesMutex;
-   boost::condition_variable m_PendingChangesCondition;
+   std::mutex m_PendingChangesMutex;
+   std::condition_variable m_PendingChangesCondition;
    class IsPendingChanges
    {
    private:
       std::list<DeviceState>& m_List;
    public:
-      IsPendingChanges(std::list<DeviceState>& list):m_List(list){}
+	   explicit  IsPendingChanges(std::list<DeviceState>& list):m_List(list){}
       bool operator()() const {return !m_List.empty();}
    };
 };
@@ -88,7 +92,7 @@ protected:
 class OneWireReadErrorException : public std::exception
 {
 public:
-   OneWireReadErrorException(const std::string& deviceFileName) : m_Message("1-Wire system : error reading value from ") {m_Message.append(deviceFileName);}
+	explicit OneWireReadErrorException(const std::string& deviceFileName) : m_Message("1-Wire system : error reading value from ") {m_Message.append(deviceFileName);}
    virtual ~OneWireReadErrorException() throw() {}
    virtual const char* what() const throw() {return m_Message.c_str();}
 protected:
@@ -98,7 +102,7 @@ protected:
 class OneWireWriteErrorException : public std::exception
 {
 public:
-   OneWireWriteErrorException(const std::string& deviceFileName) : m_Message("1-Wire system : error writing value from ") {m_Message.append(deviceFileName);}
+	explicit  OneWireWriteErrorException(const std::string& deviceFileName) : m_Message("1-Wire system : error writing value from ") {m_Message.append(deviceFileName);}
    virtual ~OneWireWriteErrorException() throw() {}
    virtual const char* what() const throw() {return m_Message.c_str();}
 protected:

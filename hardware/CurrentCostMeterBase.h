@@ -1,7 +1,6 @@
 #pragma once
 
 #include "DomoticzHardware.h"
-#include "hardwaretypes.h"
 
 class CurrentCostMeterBase : public CDomoticzHardwareBase
 {
@@ -17,5 +16,6 @@ private:
 	void ExtractReadings();
 	bool ExtractNumberBetweenStrings(const char *startString, const char *endString, float *pResult);
 	std::string m_buffer;
+	unsigned int m_tempuratureCounter;
 };
 

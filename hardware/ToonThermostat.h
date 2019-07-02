@@ -1,19 +1,33 @@
 #pragma once
 
 #include "DomoticzHardware.h"
-#include <iostream>
 #include "hardwaretypes.h"
+
+namespace Json
+{
+	class Value;
+};
 
 class CToonThermostat : public CDomoticzHardwareBase
 {
 public:
-	CToonThermostat(const int ID, const std::string &Username, const std::string &Password);
+	CToonThermostat(const int ID, const std::string &Username, const std::string &Password, const int &Agreement);
 	~CToonThermostat(void);
-	bool WriteToHardware(const char *pdata, const unsigned char length);
+	bool WriteToHardware(const char *pdata, const unsigned char length) override;
 	void SetSetpoint(const int idx, const float temp);
 	void SetProgramState(const int newState);
 private:
-	void SendTempSensor(const unsigned char Idx, const float Temp, const std::string &defaultname);
+	void Init();
+	bool StartHardware() override;
+	bool StopHardware() override;
+	void Do_Work();
+	void GetMeterDetails();
+
+	bool ParseThermostatData(const Json::Value &root);
+	bool ParseDeviceStatusData(const Json::Value &root);
+	bool ParsePowerUsage(const Json::Value &root);
+	bool ParseGasUsage(const Json::Value &root);
+
 	void SendSetPointSensor(const unsigned char Idx, const float Temp, const std::string &defaultname);
 	void UpdateSwitch(const unsigned char Idx, const bool bOn, const std::string &defaultname);
 
@@ -29,13 +43,13 @@ private:
 	bool Login();
 	void Logout();
 	std::string GetRandom();
-
+private:
 	std::string m_UserName;
 	std::string m_Password;
+	int m_Agreement;
 	std::string m_ClientID;
 	std::string m_ClientIDChecksum;
-	volatile bool m_stoprequested;
-	boost::shared_ptr<boost::thread> m_thread;
+	std::shared_ptr<std::thread> m_thread;
 
 	unsigned long m_LastUsage1;
 	unsigned long m_LastUsage2;
@@ -55,13 +69,10 @@ private:
 	unsigned long m_lastelectrausage;
 	unsigned long m_lastelectradeliv;
 
+	int m_poll_counter;
+	int m_retry_counter;
+
 	std::map<int, double> m_LastElectricCounter;
 	std::map<int, double> m_OffsetElectricUsage;
-
-	void Init();
-	bool StartHardware();
-	bool StopHardware();
-	void Do_Work();
-	void GetMeterDetails();
 };
 

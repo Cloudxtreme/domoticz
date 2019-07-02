@@ -2,9 +2,7 @@
 
 #include "../hardware/DomoticzHardware.h"
 #include "TCPClient.h"
-#include "../webserver/proxyclient.h"
 #include <set>
-#include <vector>
 
 namespace tcp {
 namespace server {
@@ -15,13 +13,25 @@ struct _tRemoteShareUser
 {
 	std::string Username;
 	std::string Password;
-	std::vector<unsigned long long> Devices;
+	std::vector<uint64_t> Devices;
+};
+
+#define RemoteMessage_id_Low 0xE2
+#define RemoteMessage_id_High 0x2E
+#define SECONDS_PER_DAY 60*60*24
+
+struct _tRemoteMessage
+{
+	uint8_t ID_Low;
+	uint8_t ID_High;
+	int		Original_Hardware_ID;
+	//data
 };
 
 class CTCPServerIntBase
 {
 public:
-	CTCPServerIntBase(CTCPServer *pRoot);
+	explicit CTCPServerIntBase(CTCPServer *pRoot);
 	~CTCPServerIntBase(void);
 
 	virtual void start() = 0;
@@ -29,12 +39,17 @@ public:
 	virtual void stopClient(CTCPClient_ptr c) = 0;
 	virtual void stopAllClients();
 
-	void SendToAll(const unsigned long long DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore);
+	void SendToAll(const int HardwareID, const uint64_t DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore);
 
 	void SetRemoteUsers(const std::vector<_tRemoteShareUser> &users);
 	std::vector<_tRemoteShareUser> GetRemoteUsers();
 	unsigned int GetUserDevicesCount(const std::string &username);
 protected:
+	struct _tTCPLogInfo
+	{
+		time_t		time;
+		std::string string;
+	};
 
 	_tRemoteShareUser* FindUser(const std::string &username);
 
@@ -45,7 +60,7 @@ protected:
 	CTCPServer *m_pRoot;
 
 	std::set<CTCPClient_ptr> connections_;
-	boost::mutex connectionMutex;
+	std::mutex connectionMutex;
 
 	friend class CTCPClient;
 	friend class CSharedClient;
@@ -55,10 +70,10 @@ class CTCPServerInt : public CTCPServerIntBase {
 public:
 	CTCPServerInt(const std::string& address, const std::string& port, CTCPServer *pRoot);
 	~CTCPServerInt(void);
-	virtual void start();
-	virtual void stop();
+	virtual void start() override;
+	virtual void stop() override;
 	/// Stop the specified connection.
-	virtual void stopClient(CTCPClient_ptr c);
+	virtual void stopClient(CTCPClient_ptr c) override;
 private:
 
 	void handleAccept(const boost::system::error_code& error);
@@ -72,6 +87,9 @@ private:
 	boost::asio::ip::tcp::acceptor acceptor_;
 
 	CTCPClient_ptr new_connection_;
+
+	bool IsUserHereFirstTime(const std::string &ip_string);
+	std::vector<_tTCPLogInfo> m_incoming_domoticz_history;
 };
 
 #ifndef NOCLOUD
@@ -79,10 +97,10 @@ class CTCPServerProxied : public CTCPServerIntBase {
 public:
 	CTCPServerProxied(CTCPServer *pRoot, http::server::CProxyClient *proxy);
 	~CTCPServerProxied(void);
-	virtual void start();
-	virtual void stop();
+	virtual void start() override;
+	virtual void stop() override;
 	/// Stop the specified connection.
-	virtual void stopClient(CTCPClient_ptr c);
+	virtual void stopClient(CTCPClient_ptr c) override;
 
 	bool OnNewConnection(const std::string &token, const std::string &username, const std::string &password);
 	bool OnDisconnect(const std::string &token);
@@ -97,7 +115,7 @@ class CTCPServer : public CDomoticzHardwareBase
 {
 public:
 	CTCPServer();
-	CTCPServer(const int ID);
+	explicit CTCPServer(const int ID);
 	~CTCPServer(void);
 
 	bool StartServer(const std::string &address, const std::string &port);
@@ -105,29 +123,28 @@ public:
 	bool StartServer(http::server::CProxyClient *proxy);
 #endif
 	void StopServer();
-	void SendToAll(const unsigned long long DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore);
+	void SendToAll(const int HardwareID, const uint64_t DeviceRowID, const char *pData, size_t Length, const CTCPClientBase* pClient2Ignore);
 	void SetRemoteUsers(const std::vector<_tRemoteShareUser> &users);
 	unsigned int GetUserDevicesCount(const std::string &username);
 	void stopAllClients();
 	boost::signals2::signal<void(CDomoticzHardwareBase *pHardware, const unsigned char *pRXCommand, const char *defaultName, const int BatteryLevel)> sDecodeRXMessage;
-	bool WriteToHardware(const char *pdata, const unsigned char length) { return true; };
+	bool WriteToHardware(const char* /*pdata*/, const unsigned char /*length*/) { return true; };
 	void DoDecodeMessage(const CTCPClientBase *pClient, const unsigned char *pRXCommand);
 #ifndef NOCLOUD
 	CTCPServerProxied *GetProxiedServer();
 #endif
 private:
-	boost::mutex m_server_mutex;
+	std::mutex m_server_mutex;
 	CTCPServerInt *m_pTCPServer;
 #ifndef NOCLOUD
 	CTCPServerProxied *m_pProxyServer;
 #endif
 
-	boost::shared_ptr<boost::thread> m_thread;
+	std::shared_ptr<std::thread> m_thread;
 	bool StartHardware() { return false; };
 	bool StopHardware() { return false; };
 
 	void Do_Work();
-	bool b_ViaProxy;
 };
 
 } // namespace server

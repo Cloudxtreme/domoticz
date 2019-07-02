@@ -1,33 +1,38 @@
 #pragma once
 
 #include "DomoticzHardware.h"
-#include <iostream>
+#include <string>
 
 class SolarEdgeAPI : public CDomoticzHardwareBase
 {
+	struct _tInverterSettings
+	{
+		std::string name;
+		std::string manufacturer;
+		std::string model;
+		std::string SN;
+	};
 public:
-	SolarEdgeAPI(const int ID, const int SiteID, const std::string &Serial, const std::string &APIKey);
+	SolarEdgeAPI(const int ID, const std::string &APIKey);
 	~SolarEdgeAPI(void);
-	bool WriteToHardware(const char *pdata, const unsigned char length);
+	bool WriteToHardware(const char *pdata, const unsigned char length) override;
+private:
+	bool StartHardware() override;
+	bool StopHardware() override;
+	void Do_Work();
+	bool GetSite();
+	void GetInverters();
+	void GetMeterDetails();
+	void GetInverterDetails(const _tInverterSettings *pInverterSettings, const int iInverterNumber);
+	int getSunRiseSunSetMinutes(const bool bGetSunRise);
 private:
 	int m_SiteID;
-	std::string m_Serial;
 	std::string m_APIKey;
-	volatile bool m_stoprequested;
-	boost::shared_ptr<boost::thread> m_thread;
+	std::vector<_tInverterSettings> m_inverters;
 
-	double m_LastUsage;
-	double m_LastCounter;
-	float m_LastTemp;
-	float m_LastAC;
-	float m_LastDC;
-	float m_LastHz;
+	double m_totalActivePower;
+	double m_totalEnergy;
 
-	void Init();
-	bool StartHardware();
-	bool StopHardware();
-	void Do_Work();
-	void GetMeterDetails();
-	int getSunRiseSunSetMinutes(const bool bGetSunRise);
+	std::shared_ptr<std::thread> m_thread;
 };
 

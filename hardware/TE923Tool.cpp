@@ -75,7 +75,7 @@ bool CTE923Tool::OpenDevice()
 		_log.Log(LOG_ERROR, "TE923: Error while opening USB port and getting a device handler." );
 		return false;
 	}
-#ifndef WIN32
+#if !defined(WIN32) && !defined(__NetBSD__)
 	char driver_name[30];
 	ret = usb_get_driver_np(m_device_handle, 0, driver_name, 30);
 	if ( ret == 0 ) {
@@ -278,7 +278,7 @@ int CTE923Tool::decode_te923_data( unsigned char buf[], Te923DataSet_t *data )
 	//don't know to find out it sensor link missing, but is no problem, because the counter is inside
 	//the station, not in the sensor.
 	data->_RainCount = 0;
-	data->RainCount = ( int )( buf[31] * 0x100 + buf[30] );
+	data->RainCount = ( int )(( buf[31] * 0x100 + buf[30] )/2);
 	return 0;
 }
 
@@ -432,9 +432,9 @@ int CTE923Tool::get_te923_memdata( Te923DataSet_t *data )
 	} else
 		adr = data->__src;
 
-	time_t tm = mytime( NULL );
+	time_t now = mytime( NULL );
 	struct tm timeinfo;
-	localtime_r(&tm, &timeinfo);
+	localtime_r(&now, &timeinfo);
 
 	int sysyear = timeinfo.tm_year;
 	int sysmon = timeinfo.tm_mon;
@@ -457,6 +457,7 @@ int CTE923Tool::get_te923_memdata( Te923DataSet_t *data )
 	int minute = bcd2int( buf[4] );
 
 	struct tm newtime;
+/*
 	newtime.tm_year = year;
 	newtime.tm_mon  = mon - 1;
 	newtime.tm_mday = day;
@@ -464,8 +465,12 @@ int CTE923Tool::get_te923_memdata( Te923DataSet_t *data )
 	newtime.tm_min  = minute;
 	newtime.tm_sec  = 0;
 	newtime.tm_isdst = -1;
-
 	data->timestamp = (unsigned long)mktime( &newtime );
+*/
+	time_t timestamp;
+	constructTime(timestamp,newtime,year+1900,mon,day,hour,minute,0,-1);
+	data->timestamp = (unsigned long)timestamp;
+
 	memcpy( databuf, buf + 5, 11 );
 	adr += 0x10;
 	readretries=0;
@@ -522,19 +527,19 @@ void CTE923Tool::GetPrintData( Te923DataSet_t *data, char *szOutputBuffer)
 	strcat(szOutputBuffer,szTmp);
 
 	if ( data->_forecast == 0 ) 
-		sprintf(szTmp, "%d:", data->forecast );
+		sprintf(szTmp, "%d:", (int)data->forecast );
 	else
 		sprintf(szTmp, "%s:", iText );
 	strcat(szOutputBuffer,szTmp);
 
 	if ( data->_storm == 0 ) 
-		sprintf(szTmp, "%d:", data->storm );
+		sprintf(szTmp, "%d:", (int)data->storm );
 	else 
 		sprintf(szTmp, "%s:", iText );
 	strcat(szOutputBuffer,szTmp);
 
 	if ( data->_wDir == 0 ) 
-		sprintf(szTmp, "%d:", data->wDir );
+		sprintf(szTmp, "%d:", (int)data->wDir );
 	else 
 		sprintf(szTmp, "%s:", iText );
 	strcat(szOutputBuffer,szTmp);

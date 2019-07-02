@@ -5,21 +5,27 @@
 #include "../main/SQLHelper.h"
 #include "../main/RFXtrx.h"
 #include "../main/localtime_r.h"
+#include "../main/Noncopyable.h"
 #include "../main/WebServer.h"
 #include "../main/mainworker.h"
 #include "../webserver/cWebem.h"
 #include "../json/json.h"
 
 #include <boost/asio.hpp>
-#include <boost/enable_shared_from_this.hpp>
 
 #include "pinger/icmp_header.h"
 #include "pinger/ipv4_header.h"
 
 #include <iostream>
 
+#if BOOST_VERSION >= 107000
+#define GET_IO_SERVICE(s) ((boost::asio::io_context&)(s).get_executor().context())
+#else
+#define GET_IO_SERVICE(s) ((s).get_io_service())
+#endif
+
 class pinger
-	: private boost::noncopyable
+	: private domoticz::noncopyable
 {
 public:
 	pinger(boost::asio::io_service& io_service, const char* destination, const int iPingTimeoutms)
@@ -29,15 +35,19 @@ public:
 		boost::asio::ip::icmp::resolver::query query(boost::asio::ip::icmp::v4(), destination, "");
 		destination_ = *resolver_.resolve(query);
 
-		start_send(iPingTimeoutms);
+		num_tries_ = 1;
+		PingTimeoutms_ = iPingTimeoutms;
+		start_send();
 		start_receive();
 	}
 	int num_replies_;
+	int num_tries_;
+	int PingTimeoutms_;
 	bool m_PingState;
 private:
-	void start_send(const int iPingTimeoutms)
+	void start_send()
 	{
-		std::string body("Ping from Domoticz.");
+		std::string body("Domoticz");
 
 		// Create an ICMP header for an echo request.
 		icmp_header echo_request;
@@ -57,17 +67,27 @@ private:
 		socket_.send_to(request_buffer.data(), destination_);
 
 		num_replies_ = 0;
-		timer_.expires_at(time_sent_ + boost::posix_time::milliseconds(iPingTimeoutms));
+		timer_.expires_at(time_sent_ + boost::posix_time::milliseconds(PingTimeoutms_));
 		timer_.async_wait(boost::bind(&pinger::handle_timeout, this, boost::asio::placeholders::error));
 	}
 
 	void handle_timeout(const boost::system::error_code& error)
 	{
-		if (error != boost::asio::error::operation_aborted) {
+		if (error != boost::asio::error::operation_aborted)
+		{
 			if (num_replies_ == 0)
 			{
 				m_PingState = false;
-				resolver_.get_io_service().stop();
+				timer_.expires_at(time_sent_ + boost::posix_time::milliseconds(PingTimeoutms_));
+				num_tries_++;
+				if (num_tries_ > 4)
+				{
+					GET_IO_SERVICE(resolver_).stop();
+				}
+				else
+				{
+					timer_.async_wait(boost::bind(&pinger::start_send, this));
+				}
 			}
 		}
 	}
@@ -101,21 +121,18 @@ private:
 			&& icmp_hdr.identifier() == get_identifier()
 			&& icmp_hdr.sequence_number() == sequence_number_)
 		{
+			if (num_replies_++ == 0)
+				timer_.cancel();
 			m_PingState = true;
-			num_replies_++;
-			/*
-			// Print out some information about the reply packet.
-			posix_time::ptime now = posix_time::microsec_clock::universal_time();
-			std::cout << length - ipv4_hdr.header_length()
-			<< " bytes from " << ipv4_hdr.source_address()
-			<< ": icmp_seq=" << icmp_hdr.sequence_number()
-			<< ", ttl=" << ipv4_hdr.time_to_live()
-			<< ", time=" << (now - time_sent_).total_milliseconds() << " ms"
-			<< std::endl;
-			*/
+			GET_IO_SERVICE(resolver_).stop();
 		}
-		timer_.cancel();
-		resolver_.get_io_service().stop();
+		else
+		{
+			// DD 2 possible 'invalid' replies that will be discarded are:
+			// Type 8: Echo request, happens when we ping ourselves (localhost)
+			// Type 3: Destination host unreachable.
+			start_receive();
+		}
 	}
 
 	static unsigned short get_identifier()
@@ -135,24 +152,26 @@ private:
 	boost::asio::streambuf reply_buffer_;
 };
 
-CPinger::CPinger(const int ID, const int PollIntervalsec, const int PingTimeoutms):
-m_stoprequested(false),
-m_iThreadsRunning(0)
+CPinger::CPinger(const int ID, const int PollIntervalsec, const int PingTimeoutms) :
+	m_iThreadsRunning(0)
 {
-	m_HwdID=ID;
+	m_HwdID = ID;
 	m_bSkipReceiveCheck = true;
 	SetSettings(PollIntervalsec, PingTimeoutms);
 }
 
 CPinger::~CPinger(void)
 {
-	m_bIsStarted=false;
+	m_bIsStarted = false;
 }
 
 bool CPinger::StartHardware()
 {
 	StopHardware();
-	m_bIsStarted=true;
+
+	RequestStart();
+
+	m_bIsStarted = true;
 	sOnConnected(this);
 	m_iThreadsRunning = 0;
 
@@ -161,10 +180,8 @@ bool CPinger::StartHardware()
 	ReloadNodes();
 
 	//Start worker thread
-	m_stoprequested = false;
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CPinger::Do_Work, this)));
-	_log.Log(LOG_STATUS,"Pinger: Started");
-
+	m_thread = std::make_shared<std::thread>(&CPinger::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	return true;
 }
 
@@ -172,28 +189,14 @@ bool CPinger::StopHardware()
 {
 	StopHeartbeatThread();
 
-	try {
-		if (m_thread)
-		{
-			m_stoprequested = true;
-			m_thread->join();
-			m_thread.reset();
-
-			//Make sure all our background workers are stopped
-			int iRetryCounter = 0;
-			while ((m_iThreadsRunning > 0) && (iRetryCounter<15))
-			{
-				sleep_milliseconds(500);
-				iRetryCounter++;
-			}
-		}
-	}
-	catch (...)
+	if (m_thread)
 	{
-		//Don't throw from a Stop command
+		RequestStop();
+		m_thread->join();
+		m_thread.reset();
 	}
-	m_bIsStarted=false;
-    return true;
+	m_bIsStarted = false;
+	return true;
 }
 
 bool CPinger::WriteToHardware(const char *pdata, const unsigned char length)
@@ -204,27 +207,27 @@ bool CPinger::WriteToHardware(const char *pdata, const unsigned char length)
 
 void CPinger::AddNode(const std::string &Name, const std::string &IPAddress, const int Timeout)
 {
-	boost::lock_guard<boost::mutex> l(m_mutex);
+	std::lock_guard<std::mutex> l(m_mutex);
 
 	std::vector<std::vector<std::string> > result;
 
 	//Check if exists
-	result=m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (Name=='%q') AND (MacAddress=='%q')",
+	result = m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (Name=='%q') AND (MacAddress=='%q')",
 		m_HwdID, Name.c_str(), IPAddress.c_str());
-	if (result.size()>0)
+	if (!result.empty())
 		return; //Already exists
 	m_sql.safe_query("INSERT INTO WOLNodes (HardwareID, Name, MacAddress, Timeout) VALUES (%d,'%q','%q',%d)",
 		m_HwdID, Name.c_str(), IPAddress.c_str(), Timeout);
 
-	result=m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (Name=='%q') AND (MacAddress=='%q')",
+	result = m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (Name=='%q') AND (MacAddress=='%q')",
 		m_HwdID, Name.c_str(), IPAddress.c_str());
-	if (result.size()<1)
+	if (result.empty())
 		return;
 
-	int ID=atoi(result[0][0].c_str());
+	int ID = atoi(result[0][0].c_str());
 
 	char szID[40];
-	sprintf(szID,"%X%02X%02X%02X", 0, 0, (ID&0xFF00)>>8, ID&0xFF);
+	sprintf(szID, "%X%02X%02X%02X", 0, 0, (ID & 0xFF00) >> 8, ID & 0xFF);
 
 	SendSwitch(ID, 1, 255, false, 0, Name);
 	ReloadNodes();
@@ -232,21 +235,21 @@ void CPinger::AddNode(const std::string &Name, const std::string &IPAddress, con
 
 bool CPinger::UpdateNode(const int ID, const std::string &Name, const std::string &IPAddress, const int Timeout)
 {
-	boost::lock_guard<boost::mutex> l(m_mutex);
+	std::lock_guard<std::mutex> l(m_mutex);
 
 	std::vector<std::vector<std::string> > result;
 
 	//Check if exists
-	result=m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (ID==%d)",
+	result = m_sql.safe_query("SELECT ID FROM WOLNodes WHERE (HardwareID==%d) AND (ID==%d)",
 		m_HwdID, ID);
-	if (result.size()<1)
+	if (result.empty())
 		return false; //Not Found!?
 
 	m_sql.safe_query("UPDATE WOLNodes SET Name='%q', MacAddress='%q', Timeout=%d WHERE (HardwareID==%d) AND (ID==%d)",
 		Name.c_str(), IPAddress.c_str(), Timeout, m_HwdID, ID);
 
 	char szID[40];
-	sprintf(szID,"%X%02X%02X%02X", 0, 0, (ID&0xFF00)>>8, ID&0xFF);
+	sprintf(szID, "%X%02X%02X%02X", 0, 0, (ID & 0xFF00) >> 8, ID & 0xFF);
 
 	//Also update Light/Switch
 	m_sql.safe_query(
@@ -258,14 +261,14 @@ bool CPinger::UpdateNode(const int ID, const std::string &Name, const std::strin
 
 void CPinger::RemoveNode(const int ID)
 {
-	boost::lock_guard<boost::mutex> l(m_mutex);
+	std::lock_guard<std::mutex> l(m_mutex);
 
 	m_sql.safe_query("DELETE FROM WOLNodes WHERE (HardwareID==%d) AND (ID==%d)",
 		m_HwdID, ID);
 
 	//Also delete the switch
 	char szID[40];
-	sprintf(szID,"%X%02X%02X%02X", 0, 0, (ID&0xFF00)>>8, ID&0xFF);
+	sprintf(szID, "%X%02X%02X%02X", 0, 0, (ID & 0xFF00) >> 8, ID & 0xFF);
 
 	m_sql.safe_query("DELETE FROM DeviceStatus WHERE (HardwareID==%d) AND (DeviceID=='%q')",
 		m_HwdID, szID);
@@ -274,7 +277,7 @@ void CPinger::RemoveNode(const int ID)
 
 void CPinger::RemoveAllNodes()
 {
-	boost::lock_guard<boost::mutex> l(m_mutex);
+	std::lock_guard<std::mutex> l(m_mutex);
 
 	m_sql.safe_query("DELETE FROM WOLNodes WHERE (HardwareID==%d)", m_HwdID);
 
@@ -289,7 +292,7 @@ void CPinger::ReloadNodes()
 	std::vector<std::vector<std::string> > result;
 	result = m_sql.safe_query("SELECT ID,Name,MacAddress,Timeout FROM WOLNodes WHERE (HardwareID==%d)",
 		m_HwdID);
-	if (result.size() > 0)
+	if (!result.empty())
 	{
 		std::vector<std::vector<std::string> >::const_iterator itt;
 		for (itt = result.begin(); itt != result.end(); ++itt)
@@ -358,7 +361,7 @@ void CPinger::UpdateNodeStatus(const PingNode &Node, const bool bPingOK)
 			}
 			else
 			{
-				if (atime - itt->LastOK >= Node.SensorTimeoutSec)
+				if (difftime(atime, itt->LastOK) >= Node.SensorTimeoutSec)
 				{
 					itt->LastOK = atime;
 					SendSwitch(Node.ID, 1, 255, bPingOK, 0, Node.Name);
@@ -371,16 +374,17 @@ void CPinger::UpdateNodeStatus(const PingNode &Node, const bool bPingOK)
 
 void CPinger::DoPingHosts()
 {
-	boost::lock_guard<boost::mutex> l(m_mutex);
+	std::lock_guard<std::mutex> l(m_mutex);
 	std::vector<PingNode>::const_iterator itt;
 	for (itt = m_nodes.begin(); itt != m_nodes.end(); ++itt)
 	{
-		if (m_stoprequested)
+		if (IsStopRequested(0))
 			return;
 		if (m_iThreadsRunning < 1000)
 		{
 			//m_iThreadsRunning++;
 			boost::thread t(boost::bind(&CPinger::Do_Ping_Worker, this, *itt));
+			SetThreadName(t.native_handle(), "PingerWorker");
 			t.join();
 		}
 	}
@@ -391,9 +395,9 @@ void CPinger::Do_Work()
 	int mcounter = 0;
 	int scounter = 0;
 	bool bFirstTime = true;
-	while (!m_stoprequested)
+	_log.Log(LOG_STATUS, "Pinger: Worker started...");
+	while (!IsStopRequested(500))
 	{
-		sleep_milliseconds(500);
 		mcounter++;
 		if (mcounter == 2)
 		{
@@ -406,6 +410,11 @@ void CPinger::Do_Work()
 				DoPingHosts();
 			}
 		}
+	}
+	//Make sure all our background workers are stopped
+	while (m_iThreadsRunning > 0)
+	{
+		sleep_milliseconds(150);
 	}
 	_log.Log(LOG_STATUS, "Pinger: Worker stopped...");
 }
@@ -422,17 +431,16 @@ void CPinger::SetSettings(const int PollIntervalsec, const int PingTimeoutms)
 		m_iPingTimeoutms = PingTimeoutms;
 }
 
-void CPinger::Restart()
-{
-	StopHardware();
-	StartHardware();
-}
-
 //Webserver helpers
 namespace http {
 	namespace server {
 		void CWebServer::Cmd_PingerGetNodes(WebEmSession & session, const request& req, Json::Value &root)
 		{
+			if (session.rights != 2)
+			{
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
+			}
 			std::string hwid = request::findValue(&req, "idx");
 			if (hwid == "")
 				return;
@@ -449,7 +457,7 @@ namespace http {
 			std::vector<std::vector<std::string> > result;
 			result = m_sql.safe_query("SELECT ID,Name,MacAddress,Timeout FROM WOLNodes WHERE (HardwareID==%d)",
 				iHardwareID);
-			if (result.size() > 0)
+			if (!result.empty())
 			{
 				std::vector<std::vector<std::string> >::const_iterator itt;
 				int ii = 0;
@@ -470,8 +478,8 @@ namespace http {
 		{
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return;
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 			std::string hwid = request::findValue(&req, "idx");
 			std::string mode1 = request::findValue(&req, "mode1");
@@ -488,7 +496,7 @@ namespace http {
 				return;
 			if (pBaseHardware->HwdType != HTYPE_Pinger)
 				return;
-			CPinger *pHardware = (CPinger*)pBaseHardware;
+			CPinger *pHardware = reinterpret_cast<CPinger*>(pBaseHardware);
 
 			root["status"] = "OK";
 			root["title"] = "PingerSetMode";
@@ -510,8 +518,8 @@ namespace http {
 		{
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return;
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string hwid = request::findValue(&req, "idx");
@@ -531,7 +539,7 @@ namespace http {
 				return;
 			if (pBaseHardware->HwdType != HTYPE_Pinger)
 				return;
-			CPinger *pHardware = (CPinger*)pBaseHardware;
+			CPinger *pHardware = reinterpret_cast<CPinger*>(pBaseHardware);
 
 			root["status"] = "OK";
 			root["title"] = "PingerAddNode";
@@ -542,8 +550,8 @@ namespace http {
 		{
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return;
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string hwid = request::findValue(&req, "idx");
@@ -565,7 +573,7 @@ namespace http {
 				return;
 			if (pBaseHardware->HwdType != HTYPE_Pinger)
 				return;
-			CPinger *pHardware = (CPinger*)pBaseHardware;
+			CPinger *pHardware = reinterpret_cast<CPinger*>(pBaseHardware);
 
 			int NodeID = atoi(nodeid.c_str());
 			root["status"] = "OK";
@@ -577,8 +585,8 @@ namespace http {
 		{
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return;
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string hwid = request::findValue(&req, "idx");
@@ -594,7 +602,7 @@ namespace http {
 				return;
 			if (pBaseHardware->HwdType != HTYPE_Pinger)
 				return;
-			CPinger *pHardware = (CPinger*)pBaseHardware;
+			CPinger *pHardware = reinterpret_cast<CPinger*>(pBaseHardware);
 
 			int NodeID = atoi(nodeid.c_str());
 			root["status"] = "OK";
@@ -606,8 +614,8 @@ namespace http {
 		{
 			if (session.rights != 2)
 			{
-				//No admin user, and not allowed to be here
-				return;
+				session.reply_status = reply::forbidden;
+				return; //Only admin user allowed
 			}
 
 			std::string hwid = request::findValue(&req, "idx");
@@ -619,7 +627,7 @@ namespace http {
 				return;
 			if (pBaseHardware->HwdType != HTYPE_Pinger)
 				return;
-			CPinger *pHardware = (CPinger*)pBaseHardware;
+			CPinger *pHardware = reinterpret_cast<CPinger*>(pBaseHardware);
 
 			root["status"] = "OK";
 			root["title"] = "PingerClearNodes";

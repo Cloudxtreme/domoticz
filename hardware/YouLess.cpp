@@ -7,6 +7,7 @@
 #include "hardwaretypes.h"
 #include "../main/localtime_r.h"
 #include "../main/mainworker.h"
+#include "../json/json.h"
 
 #define YOULESS_POLL_INTERVAL 10
 
@@ -16,7 +17,6 @@ m_Password(CURLEncode::URLEncode(password))
 {
 	m_HwdID=ID;
 	m_usIPPort=usIPPort;
-	m_stoprequested=false;
 	Init();
 }
 
@@ -32,31 +32,46 @@ void CYouLess::Init()
 	m_meter.powerusage=0;
 	m_meter.usagecurrent=0;
 	m_meter.ID1=m_usIPPort;
+
+	memset(&m_p1power, 0, sizeof(m_p1power));
+	memset(&m_p1gas, 0, sizeof(m_p1gas));
+
+	m_p1power.len = sizeof(P1Power) - 1;
+	m_p1power.type = pTypeP1Power;
+	m_p1power.subtype = sTypeP1Power;
+	m_p1power.ID = 1;
+
+	m_p1gas.len = sizeof(P1Gas) - 1;
+	m_p1gas.type = pTypeP1Gas;
+	m_p1gas.subtype = sTypeP1Gas;
+	m_p1gas.ID = 1;
+
+	m_bHaveP1 = false;
+	m_bCheckP1 = true;
+	m_lastgasusage = 0;
+	m_lastSharedSendGas = mytime(NULL);
 }
 
 bool CYouLess::StartHardware()
 {
+	RequestStart();
+
 	Init();
 	//Start worker thread
-	m_thread = boost::shared_ptr<boost::thread>(new boost::thread(boost::bind(&CYouLess::Do_Work, this)));
+	m_thread = std::make_shared<std::thread>(&CYouLess::Do_Work, this);
+	SetThreadNameInt(m_thread->native_handle());
 	m_bIsStarted=true;
 	sOnConnected(this);
-	return (m_thread!=NULL);
+	return (m_thread != nullptr);
 }
 
 bool CYouLess::StopHardware()
 {
-	/*
-    m_stoprequested=true;
 	if (m_thread)
-		m_thread->join();
-	return true;
-    */
-	if (m_thread!=NULL)
 	{
-		assert(m_thread);
-		m_stoprequested = true;
+		RequestStop();
 		m_thread->join();
+		m_thread.reset();
 	}
     m_bIsStarted=false;
     return true;
@@ -66,9 +81,9 @@ void CYouLess::Do_Work()
 {
 	int sec_counter = YOULESS_POLL_INTERVAL - 2;
 
-	while (!m_stoprequested)
+	_log.Log(LOG_STATUS, "YouLess: Worker started...");
+	while (!IsStopRequested(1000))
 	{
-		sleep_seconds(1);
 		sec_counter++;
 
 		if (sec_counter % 12 == 0) {
@@ -87,8 +102,95 @@ bool CYouLess::WriteToHardware(const char *pdata, const unsigned char length)
 	return false;
 }
 
+bool CYouLess::GetP1Details()
+{
+	m_bCheckP1 = false;
+
+	std::string sResult;
+
+	char szURL[200];
+
+	if (m_Password.size() == 0)
+	{
+		sprintf(szURL, "http://%s:%d/e", m_szIPAddress.c_str(), m_usIPPort);
+	}
+	else
+	{
+		sprintf(szURL, "http://%s:%d/e&w=%s", m_szIPAddress.c_str(), m_usIPPort, m_Password.c_str());
+	}
+
+	if (!HTTPClient::GET(szURL, sResult))
+	{
+		_log.Log(LOG_ERROR, "YouLess: Error getting meter details!");
+		return false;
+	}
+	Json::Value root;
+
+	Json::Reader jReader;
+	bool ret = jReader.parse(sResult, root);
+	if ((!ret) || (root.empty()))
+	{
+		return false;
+	}
+	if (root.size() < 1)
+		return false;
+	root = root[0];
+
+
+	if (!root["p1"].empty())
+	{
+		int Pwr = root["pwr"].asInt();
+
+		m_p1power.powerusage1 = (unsigned long)(root["p1"].asDouble() * 1000);
+		m_p1power.powerusage2 = (unsigned long)(root["p2"].asDouble() * 1000);
+		m_p1power.powerdeliv1 = (unsigned long)(root["n1"].asDouble() * 1000);
+		m_p1power.powerdeliv2 = (unsigned long)(root["n2"].asDouble() * 1000);
+
+		if (Pwr >= 0)
+		{
+			m_p1power.usagecurrent = Pwr;
+			m_p1power.delivcurrent = 0;
+		}
+		else
+		{
+			m_p1power.delivcurrent = -Pwr;
+			m_p1power.usagecurrent = 0;
+		}
+		sDecodeRXMessage(this, (const unsigned char *)&m_p1power, "Power", 255);
+
+		m_p1gas.gasusage = (unsigned long)(root["gas"].asDouble() * 1000);
+		time_t atime = mytime(NULL);
+		if (
+			(m_p1gas.gasusage != m_lastgasusage) ||
+			(difftime(atime, m_lastSharedSendGas) >= 300)
+			)
+		{
+			m_lastgasusage = m_p1gas.gasusage;
+			m_lastSharedSendGas = atime;
+			sDecodeRXMessage(this, (const unsigned char *)&m_p1gas, "Gas", 255);
+		}
+		m_bHaveP1 = true;
+	}
+
+	if (!root["cs0"].empty())
+	{
+		//S0 Meter
+		double musage = root["ps0"].asDouble();
+		SendKwhMeter(m_HwdID, 1, 255, musage, root["cs0"].asDouble(), "S0");
+	}
+	return true;
+}
+
 void CYouLess::GetMeterDetails()
 {
+	if (m_bCheckP1 || m_bHaveP1)
+	{
+		if (GetP1Details())
+			return;
+		if (m_bHaveP1)
+			return;
+	}
+
 	std::string sResult;
 
 	char szURL[200];

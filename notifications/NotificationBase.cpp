@@ -9,6 +9,8 @@
 typedef std::map<std::string, std::string* >::iterator it_conf_type;
 typedef std::map<std::string, int* >::iterator it_conf_type_int;
 
+using namespace http::server;
+
 CNotificationBase::CNotificationBase(const std::string &subsystemid, const int options):
 _subsystemid(subsystemid),
 _options(options),
@@ -70,12 +72,26 @@ void CNotificationBase::LoadConfig()
 	}
 }
 
-bool CNotificationBase::SendMessage(const std::string &Subject, const std::string &Text, const std::string &ExtraData, const bool bFromNotification)
+bool CNotificationBase::SendMessage(
+	const uint64_t Idx,
+	const std::string &Name,
+	const std::string &Subject,
+	const std::string &Text,
+	const std::string &ExtraData,
+	const bool bFromNotification)
 {
-	return SendMessageEx(Subject, Text, std::string(""), 0, std::string(""), bFromNotification);
+	return SendMessageEx(Idx, Name, Subject, Text, std::string(""), 0, std::string(""), bFromNotification);
 }
 
-bool CNotificationBase::SendMessageEx(const std::string &Subject, const std::string &Text, const std::string &ExtraData, const int Priority, const std::string &Sound, const bool bFromNotification)
+bool CNotificationBase::SendMessageEx(
+	const uint64_t Idx,
+	const std::string &Name,
+	const std::string &Subject,
+	const std::string &Text,
+	const std::string &ExtraData,
+	const int Priority,
+	const std::string &Sound,
+	const bool bFromNotification)
 {
 	if (!IsConfigured()) {
 		// subsystem not configured, skip
@@ -102,13 +118,14 @@ bool CNotificationBase::SendMessageEx(const std::string &Subject, const std::str
 	if (_options & OPTIONS_URL_BODY) {
 		fText = CURLEncode::URLEncode(fText);
 	}
-	
-	bool bRet = SendMessageImplementation(fSubject, fText, ExtraData, Priority, Sound, bFromNotification);
+
+	std::unique_lock<std::mutex> SendMessageEx(SendMessageExMutex);
+	bool bRet = SendMessageImplementation(Idx, Name, fSubject, fText, ExtraData, Priority, Sound, bFromNotification);
 	if (bRet) {
-		_log.Log(LOG_NORM, std::string(std::string("Notification sent (") + _subsystemid + std::string(") => Success")).c_str());
+		_log.Log(LOG_NORM, "Notification sent (%s) => Success", _subsystemid.c_str());
 	}
 	else {
-		_log.Log(LOG_ERROR, std::string(std::string("Notification sent (") + _subsystemid + std::string(") => Failed")).c_str());
+		_log.Log(LOG_NORM, "Notification sent (%s) => Failed", _subsystemid.c_str());
 	}
 	return bRet;
 }
@@ -177,7 +194,7 @@ void CNotificationBase::ConfigFromGetvars(const request& req, const bool save)
 			std::string Value = CURLEncode::URLDecode(std::string(request::findValue(&req, iter3->first.c_str())));
 			*(iter3->second) = Value;
 			if (save) {
-				std::string ValueBase64 = base64_encode((const unsigned char*)Value.c_str(), Value.size());
+				std::string ValueBase64 = base64_encode(Value);
 				m_sql.UpdatePreferencesVar(iter3->first, ValueBase64);
 			}
 		}
@@ -225,15 +242,3 @@ bool CNotificationBase::IsInConfigBase64(const std::string &Key)
 	return false;
 }
 
-std::string CNotificationBase::MakeHtml(const std::string &txt)
-{
-	std::string sRet = txt;
-
-	stdreplace(sRet, "&", "&amp;");
-	stdreplace(sRet, "\"", "&quot;");
-	stdreplace(sRet, "'", "&apos;");
-	stdreplace(sRet, "<", "&lt;");
-	stdreplace(sRet, ">", "&gt;");
-	stdreplace(sRet, "\r\n", "<br/>");
-	return sRet;
-}

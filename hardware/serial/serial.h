@@ -32,12 +32,11 @@
  *
  * This provides a cross platform interface for interacting with Serial Ports.
  */
-
+#pragma once
 #ifndef SERIAL_H
 #define SERIAL_H
 
 #include <limits>
-#include <vector>
 #include <string>
 #include <cstring>
 #include <sstream>

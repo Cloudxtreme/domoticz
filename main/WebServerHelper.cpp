@@ -1,61 +1,46 @@
 #include "stdafx.h"
 #include "WebServerHelper.h"
+#include "../main/Logger.h"
 #include "../main/SQLHelper.h"
 
 namespace http {
 	namespace server {
 
-		typedef std::vector<CWebServer*>::iterator server_iterator;
+		typedef std::vector<std::shared_ptr<CWebServer> >::iterator server_iterator;
 #ifndef NOCLOUD
-		typedef std::vector<CProxyManager*>::iterator proxy_iterator;
 		extern CProxySharedData sharedData;
 #endif
 
 		CWebServerHelper::CWebServerHelper()
 		{
-#ifdef NS_ENABLE_SSL
-			secureServer_ = NULL;
-#endif
-			plainServer_ = NULL;
-
 			m_pDomServ = NULL;
 		}
 
 		CWebServerHelper::~CWebServerHelper()
 		{
-#ifdef NS_ENABLE_SSL
-			if (secureServer_) delete secureServer_;
-#endif
-			if (plainServer_) delete plainServer_;
-
-#ifndef NOCLOUD
-			for (proxy_iterator it = proxymanagerCollection.begin(); it != proxymanagerCollection.end(); ++it) {
-				delete (*it);
-			}
-#endif
+			StopServers();
 		}
-
-		bool CWebServerHelper::StartServers(const std::string &listenaddress, const std::string &listenport, const std::string &secure_listenport, const std::string &serverpath, const std::string &secure_cert_file, const std::string &secure_cert_passphrase, const bool bIgnoreUsernamePassword, tcp::server::CTCPServer *sharedServer)
+#ifdef WWW_ENABLE_SSL
+		bool CWebServerHelper::StartServers(server_settings & web_settings, ssl_server_settings & secure_web_settings, const std::string &serverpath, const bool bIgnoreUsernamePassword, tcp::server::CTCPServer *sharedServer)
+#else
+		bool CWebServerHelper::StartServers(server_settings & web_settings, const std::string &serverpath, const bool bIgnoreUsernamePassword, tcp::server::CTCPServer *sharedServer)
+#endif
 		{
 			bool bRet = false;
 
 			m_pDomServ = sharedServer;
 
-#ifdef NS_ENABLE_SSL
-			SSL_library_init();
-			serverCollection.resize(secure_listenport.empty() ? 1 : 2);
-#else
-			serverCollection.resize(1);
-#endif
 			our_serverpath = serverpath;
-			plainServer_ = new CWebServer();
-			serverCollection[0] = plainServer_;
-			bRet |= plainServer_->StartServer(listenaddress, listenport, serverpath, bIgnoreUsernamePassword);
-#ifdef NS_ENABLE_SSL
-			if (!secure_listenport.empty()) {
-				secureServer_ = new CWebServer();
-				bRet |= secureServer_->StartServer(listenaddress, secure_listenport, serverpath, bIgnoreUsernamePassword, secure_cert_file, secure_cert_passphrase);
-				serverCollection[1] = secureServer_;
+			plainServer_.reset(new CWebServer());
+			serverCollection.push_back(plainServer_);
+			bRet |= plainServer_->StartServer(web_settings, serverpath, bIgnoreUsernamePassword);
+			our_listener_port = web_settings.listening_port;
+#ifdef WWW_ENABLE_SSL
+			if (secure_web_settings.is_enabled()) {
+				SSL_library_init();
+				secureServer_.reset(new CWebServer());
+				bRet |= secureServer_->StartServer(secure_web_settings, serverpath, bIgnoreUsernamePassword);
+				serverCollection.push_back(secureServer_);
 			}
 #endif
 
@@ -72,41 +57,34 @@ namespace http {
 			for (server_iterator it = serverCollection.begin(); it != serverCollection.end(); ++it) {
 				(*it)->StopServer();
 			}
+			serverCollection.clear();
+			plainServer_.reset();
+#ifdef WWW_ENABLE_SSL
+			secureServer_.reset();
+#endif
+
 #ifndef NOCLOUD
-			for (proxy_iterator it = proxymanagerCollection.begin(); it != proxymanagerCollection.end(); ++it) {
-				(*it)->Stop();
-			}
+			proxymanager.Stop();
 #endif
 		}
 
 #ifndef NOCLOUD
 		void CWebServerHelper::RestartProxy() {
 			sharedData.StopTCPClients();
-			for (proxy_iterator it = proxymanagerCollection.begin(); it != proxymanagerCollection.end(); ++it) {
-				(*it)->Stop();
-				// todo: This seems to crash on a Pi (fatal signal 6). Windows goes fine.
-				// stop old threads first
-				//delete (*it);
+			proxymanager.Stop();
+			// restart
+			cWebem *my_pWebEm = (plainServer_ != NULL ? plainServer_->m_pWebEm : (secureServer_ != NULL ? secureServer_->m_pWebEm : NULL));
+			if (my_pWebEm == NULL) {
+				_log.Log(LOG_ERROR, "No servers are configured. Hence mydomoticz will not be started either (if configured)");
+				return;
 			}
-
-			// restart threads
-			const unsigned int connections = GetNrMyDomoticzThreads();
-			proxymanagerCollection.resize(connections);
-			for (unsigned int i = 0; i < connections; i++) {
-				proxymanagerCollection[i] = new CProxyManager(our_serverpath, plainServer_->m_pWebEm, m_pDomServ);
-				proxymanagerCollection[i]->Start(i == 0);
+			if (proxymanager.Start(my_pWebEm, m_pDomServ)) {
+				_log.Log(LOG_STATUS, "Proxymanager started.");
 			}
-			_log.Log(LOG_STATUS, "Proxymanager started.");
 		}
 
 		CProxyClient *CWebServerHelper::GetProxyForMaster(DomoticzTCP *master) {
-			if (proxymanagerCollection.size() > 0) {
-				// todo: make this a random connection?
-				return proxymanagerCollection[0]->GetProxyForMaster(master);
-			}
-			// we are not connected yet. save this master and connect later.
-			sharedData.AddTCPClient(master);
-			return NULL;
+			return proxymanager.GetProxyForMaster(master);
 		}
 
 		void CWebServerHelper::RemoveMaster(DomoticzTCP *master) {
@@ -114,7 +92,14 @@ namespace http {
 		}
 #endif
 
-		void CWebServerHelper::SetAuthenticationMethod(int amethod)
+		void CWebServerHelper::SetWebCompressionMode(const _eWebCompressionMode gzmode)
+		{
+			for (server_iterator it = serverCollection.begin(); it != serverCollection.end(); ++it) {
+				(*it)->SetWebCompressionMode(gzmode);
+			 }
+		}
+
+		void CWebServerHelper::SetAuthenticationMethod(const _eAuthenticationMethod amethod)
 		{
 			for (server_iterator it = serverCollection.begin(); it != serverCollection.end(); ++it) {
 				(*it)->SetAuthenticationMethod(amethod);
@@ -133,6 +118,7 @@ namespace http {
 			for (server_iterator it = serverCollection.begin(); it != serverCollection.end(); ++it) {
 				(*it)->SetWebRoot(webRoot);
 			 }
+			proxymanager.SetWebRoot(webRoot);
 		}
 
 		void CWebServerHelper::ClearUserPasswords()
@@ -143,14 +129,27 @@ namespace http {
 		}
 
 		//JSon
-		void CWebServerHelper::	GetJSonDevices(Json::Value &root, const std::string &rused, const std::string &rfilter, const std::string &order, const std::string &rowid, const std::string &planID, const std::string &floorID, const bool bDisplayHidden, const time_t LastUpdate, const std::string &username)
+		void CWebServerHelper::	GetJSonDevices(
+			Json::Value &root,
+			const std::string &rused,
+			const std::string &rfilter,
+			const std::string &order,
+			const std::string &rowid,
+			const std::string &planID,
+			const std::string &floorID,
+			const bool bDisplayHidden,
+			const bool bDisplayDisabled,
+			const bool bFetchFavorites,
+			const time_t LastUpdate,
+			const std::string &username,
+			const std::string &hardwareid) // OTO
 		{
 			if (plainServer_) { // assert
-				plainServer_->GetJSonDevices(root, rused, rfilter, order, rowid, planID, floorID, bDisplayHidden, LastUpdate, username);
+				plainServer_->GetJSonDevices(root, rused, rfilter, order, rowid, planID, floorID, bDisplayHidden, bDisplayDisabled, bFetchFavorites, LastUpdate, username, hardwareid);
 			}
-#ifdef NS_ENABLE_SSL
+#ifdef WWW_ENABLE_SSL
 			else if (secureServer_) {
-				secureServer_->GetJSonDevices(root, rused, rfilter, order, rowid, planID, floorID, bDisplayHidden, LastUpdate, username);
+				secureServer_->GetJSonDevices(root, rused, rfilter, order, rowid, planID, floorID, bDisplayHidden, bDisplayDisabled, bFetchFavorites, LastUpdate, username, hardwareid);
 			}
 #endif
 		}
@@ -161,15 +160,6 @@ namespace http {
 				(*it)->ReloadCustomSwitchIcons();
 			 }
 		}
-
-#ifndef NOCLOUD
-		int CWebServerHelper::GetNrMyDomoticzThreads()
-		{
-			int nrThreads = 1; // default value
-			m_sql.GetPreferencesVar("MyDomoticzNrThreads", nrThreads);
-			return nrThreads;
-		}
-#endif
 	}
 
 }
